@@ -1,6 +1,6 @@
 [package]
 name = "rawtree-cli"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 repository = "https://github.com/rawtreedb/rawtree-cli"
 
