@@ -1,4 +1,4 @@
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -85,19 +85,42 @@ pub enum Command {
         #[command(subcommand)]
         action: TableCommand,
     },
-    /// View query logs for a database
+    /// View API request logs for a database
     Logs {
         #[arg(long)]
         database: Option<String>,
-        /// Filter by query type: select or insert
         #[arg(long)]
-        r#type: Option<String>,
-        /// Filter by table name. Repeat to include multiple tables.
-        #[arg(long, action = ArgAction::Append)]
-        table: Vec<String>,
-        /// Filter by status: success or error
-        #[arg(long, value_parser = ["success", "error"])]
-        status: Option<String>,
+        search: Option<String>,
+        /// Comma-separated HTTP methods (for example GET,POST)
+        #[arg(long, value_delimiter = ',')]
+        methods: Vec<String>,
+        /// Comma-separated HTTP status codes (for example 200,404,500)
+        #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u16).range(100..=599))]
+        status_codes: Vec<u16>,
+        /// Comma-separated request levels: success, warning, or error
+        #[arg(long, value_delimiter = ',')]
+        levels: Vec<String>,
+        /// Comma-separated request sources: ui, cli, or api
+        #[arg(long, value_delimiter = ',')]
+        sources: Vec<String>,
+        /// Exact user-agent value
+        #[arg(long)]
+        user_agent: Option<String>,
+        /// Case-insensitive substring of the request host
+        #[arg(long)]
+        host: Option<String>,
+        /// Comma-separated exact request paths
+        #[arg(long, value_delimiter = ',')]
+        paths: Vec<String>,
+        /// Minimum request duration in milliseconds
+        #[arg(long)]
+        min_duration_ms: Option<u64>,
+        /// Maximum request duration in milliseconds
+        #[arg(long)]
+        max_duration_ms: Option<u64>,
+        /// Comma-separated database names to include on a dedicated cluster
+        #[arg(long, value_delimiter = ',')]
+        log_databases: Vec<String>,
         /// Maximum number of log entries to return (default: 50, max: 200)
         #[arg(long, default_value = "50", value_parser = clap::value_parser!(u64).range(1..=200))]
         limit: u64,
@@ -646,33 +669,55 @@ mod tests {
     }
 
     #[test]
-    fn logs_table_filter_can_be_repeated() {
+    fn logs_request_filters_parse() {
         let cli = Cli::try_parse_from([
             "rtree",
             "logs",
             "--database",
             "analytics",
-            "--table",
-            "events",
-            "--table",
-            "audit",
+            "--search",
+            "request-123",
+            "--methods",
+            "GET,POST",
+            "--status-codes",
+            "200,500",
+            "--levels",
+            "success,error",
+            "--sources",
+            "cli",
+            "--paths",
+            "/v1/query,/v1/logs",
+            "--log-databases",
+            "events,audit",
         ])
-        .expect("repeated --table should parse");
+        .expect("request log filters should parse");
 
         match cli.command {
-            Command::Logs { table, .. } => {
-                assert_eq!(table, vec!["events".to_string(), "audit".to_string()]);
+            Command::Logs {
+                search,
+                methods,
+                status_codes,
+                levels,
+                sources,
+                paths,
+                log_databases,
+                ..
+            } => {
+                assert_eq!(search.as_deref(), Some("request-123"));
+                assert_eq!(methods, vec!["GET", "POST"]);
+                assert_eq!(status_codes, vec![200, 500]);
+                assert_eq!(levels, vec!["success", "error"]);
+                assert_eq!(sources, vec!["cli"]);
+                assert_eq!(paths, vec!["/v1/query", "/v1/logs"]);
+                assert_eq!(log_databases, vec!["events", "audit"]);
             }
             _ => panic!("expected logs command"),
         }
     }
 
     #[test]
-    fn logs_status_only_accepts_success_or_error() {
-        let ok = Cli::try_parse_from(["rtree", "logs", "--status", "success"]);
-        assert!(ok.is_ok(), "success should parse");
-
-        let err = Cli::try_parse_from(["rtree", "logs", "--status", "ok"]);
-        assert!(err.is_err(), "ok should not be accepted as a logs status");
+    fn logs_status_codes_must_be_http_statuses() {
+        let result = Cli::try_parse_from(["rtree", "logs", "--status-codes", "99"]);
+        assert!(result.is_err(), "status codes below 100 should be rejected");
     }
 }

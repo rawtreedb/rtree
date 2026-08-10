@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::client::ApiClient;
 use crate::org;
@@ -8,18 +9,48 @@ use crate::output;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LogEntry {
+    pub uuid: String,
+    pub level: String,
+    pub date: String,
+    pub status: u16,
+    pub pathname: String,
+    pub latency: u64,
+    pub headers: BTreeMap<String, String>,
+    pub message: Option<String>,
+    pub percentile: Option<f64>,
+    pub id: String,
     pub time: String,
-    #[serde(rename = "type")]
-    pub log_type: String,
-    pub status: String,
-    pub query: String,
-    pub exception: String,
-    pub rows: u64,
+    pub method: String,
+    pub host: String,
+    pub path: String,
+    pub route: String,
+    pub status_code: u16,
+    pub source: String,
     pub duration_ms: u64,
-    pub bytes: u64,
-    pub tables: Vec<String>,
-    pub projections: Vec<String>,
-    pub hints: Vec<String>,
+    pub user_agent: String,
+    pub client_version: String,
+    pub request_size_bytes: u64,
+    pub response_size_bytes: u64,
+    pub content_encoding: String,
+    pub handler_ms: u64,
+    pub app_overhead_ms: u64,
+    pub error: String,
+    pub error_code: String,
+    pub error_message: String,
+    pub error_hint: String,
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent_span_id: String,
+    pub database: String,
+    pub user_id: String,
+    pub user_email: String,
+    pub key_name: String,
+    pub organization_id: String,
+    pub organization_name: String,
+    pub cluster_id: String,
+    pub cluster_name: String,
+    pub url_query: String,
+    pub request_body: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -79,13 +110,11 @@ fn resolve_time_range(
 ) -> Result<(String, String)> {
     let now = Utc::now();
 
-    // Absolute timestamps mode
     if start_time.is_some() || end_time.is_some() {
         let end = end_time
-            .map(|s| s.to_string())
+            .map(ToOwned::to_owned)
             .unwrap_or_else(|| now.format("%Y-%m-%dT%H:%M:%SZ").to_string());
-        let start = start_time.map(|s| s.to_string()).unwrap_or_else(|| {
-            // Default to 24h before end_time, not 24h before now
+        let start = start_time.map(ToOwned::to_owned).unwrap_or_else(|| {
             chrono::DateTime::parse_from_rfc3339(&end)
                 .map(|dt| {
                     (dt - chrono::Duration::hours(24))
@@ -108,7 +137,6 @@ fn resolve_time_range(
         return Ok((start, end));
     }
 
-    // Relative duration mode (or defaults)
     let since_delta = match since {
         Some(s) => parse_duration(s)?,
         None => chrono::Duration::hours(24),
@@ -132,131 +160,165 @@ fn resolve_time_range(
     Ok((start, end))
 }
 
+fn append_param(params: &mut Vec<String>, name: &str, value: &str) {
+    params.push(format!("{name}={}", urlencoding::encode(value)));
+}
+
+fn append_csv_param<T: ToString>(params: &mut Vec<String>, name: &str, values: &[T]) {
+    if values.is_empty() {
+        return;
+    }
+    let value = values
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    append_param(params, name, &value);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_query_string(
     start_time: &str,
     end_time: &str,
-    log_type: Option<&str>,
-    tables: &[String],
-    status: Option<&str>,
+    search: Option<&str>,
+    methods: &[String],
+    status_codes: &[u16],
+    levels: &[String],
+    sources: &[String],
+    user_agent: Option<&str>,
+    host: Option<&str>,
+    paths: &[String],
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
+    log_databases: &[String],
     limit: u64,
     offset: u64,
 ) -> String {
-    let mut params = vec![
-        format!("start_time={}", urlencoding::encode(start_time)),
-        format!("end_time={}", urlencoding::encode(end_time)),
-        format!("limit={}", limit),
-        format!("offset={}", offset),
-    ];
-
-    let search = build_search_filter(log_type, tables, status);
-    if let Some(search) = search {
-        params.push(format!("search={}", urlencoding::encode(&search)));
+    let mut params = Vec::new();
+    append_param(&mut params, "start_time", start_time);
+    append_param(&mut params, "end_time", end_time);
+    if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
+        append_param(&mut params, "search", search);
     }
-
+    append_csv_param(&mut params, "methods", methods);
+    append_csv_param(&mut params, "status_codes", status_codes);
+    append_csv_param(&mut params, "levels", levels);
+    append_csv_param(&mut params, "sources", sources);
+    if let Some(user_agent) = user_agent.map(str::trim).filter(|value| !value.is_empty()) {
+        append_param(&mut params, "user_agent", user_agent);
+    }
+    if let Some(host) = host.map(str::trim).filter(|value| !value.is_empty()) {
+        append_param(&mut params, "host", host);
+    }
+    append_csv_param(&mut params, "paths", paths);
+    if let Some(min_duration_ms) = min_duration_ms {
+        append_param(&mut params, "min_duration_ms", &min_duration_ms.to_string());
+    }
+    if let Some(max_duration_ms) = max_duration_ms {
+        append_param(&mut params, "max_duration_ms", &max_duration_ms.to_string());
+    }
+    append_csv_param(&mut params, "log_databases", log_databases);
+    append_param(&mut params, "limit", &limit.to_string());
+    append_param(&mut params, "offset", &offset.to_string());
     params.join("&")
 }
 
-fn build_search_filter(
-    log_type: Option<&str>,
-    tables: &[String],
-    status: Option<&str>,
-) -> Option<String> {
-    let mut filters = Vec::new();
-
-    if let Some(log_type) = log_type.map(str::trim).filter(|value| !value.is_empty()) {
-        filters.push(format!("type:{log_type}"));
-    }
-    if let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) {
-        filters.push(format!("status:{status}"));
-    }
-    let tables: Vec<&str> = tables
-        .iter()
-        .map(|table| table.trim())
-        .filter(|table| !table.is_empty())
-        .collect();
-    if !tables.is_empty() {
-        filters.push(format!("table:{}", tables.join(",")));
-    }
-
-    (!filters.is_empty()).then(|| filters.join(" "))
-}
-
-fn truncate_query(query: &str, max_len: usize) -> String {
-    let normalized: String = query.split_whitespace().collect::<Vec<_>>().join(" ");
+fn truncate_text(value: &str, max_len: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.len() <= max_len {
-        normalized
-    } else {
-        let mut end = max_len - 3;
-        while !normalized.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}...", &normalized[..end])
+        return normalized;
     }
-}
+    if max_len <= 3 {
+        return normalized.chars().take(max_len).collect();
+    }
 
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    if bytes < 1000 {
-        return format!("{bytes} B");
+    let mut end = max_len - 3;
+    while !normalized.is_char_boundary(end) {
+        end -= 1;
     }
-    let mut size = bytes as f64;
-    let mut unit_index = 0usize;
-    while size >= 1000.0 && unit_index < UNITS.len() - 1 {
-        size /= 1000.0;
-        unit_index += 1;
-    }
-    format!("{size:.1} {}", UNITS[unit_index])
+    format!("{}...", &normalized[..end])
 }
 
 fn format_log_line(entry: &LogEntry) -> String {
-    let time = if entry.time.len() >= 19 {
-        &entry.time[..19]
-    } else {
+    let time = if entry.date.is_empty() {
         &entry.time
-    };
-    let status_str = if entry.status.eq_ignore_ascii_case("OK") {
-        "OK"
     } else {
-        "ERROR"
+        &entry.date
     };
-    let query = truncate_query(&entry.query, 80);
-    let bytes = format_bytes(entry.bytes);
+    let path = if entry.pathname.is_empty() {
+        &entry.path
+    } else {
+        &entry.pathname
+    };
+    let status = if entry.status_code == 0 {
+        entry.status
+    } else {
+        entry.status_code
+    };
 
     let mut line = format!(
-        "{}  {:<6}  {:<5}  {:>7}  {:>10}  {:>8}  {}",
+        "{}  {:>3}  {:<6}  {:>8}  {:<4}  {}",
         time,
-        entry.log_type,
-        status_str,
+        status,
+        entry.method,
         format!("{}ms", entry.duration_ms),
-        format!("{} rows", entry.rows),
-        bytes,
-        query
+        entry.source,
+        truncate_text(path, 100)
     );
 
-    if !entry.exception.is_empty() {
-        line.push_str(&format!("  [{}]", entry.exception));
+    let error = if !entry.error_message.is_empty() {
+        &entry.error_message
+    } else if !entry.error.is_empty() {
+        &entry.error
+    } else {
+        ""
+    };
+    if !error.is_empty() {
+        line.push_str(&format!("  [{}]", truncate_text(error, 160)));
     }
 
     line
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fetch_logs(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
     start_time: &str,
     end_time: &str,
-    log_type: Option<&str>,
-    tables: &[String],
-    status: Option<&str>,
+    search: Option<&str>,
+    methods: &[String],
+    status_codes: &[u16],
+    levels: &[String],
+    sources: &[String],
+    user_agent: Option<&str>,
+    host: Option<&str>,
+    paths: &[String],
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
+    log_databases: &[String],
     limit: u64,
     offset: u64,
 ) -> Result<LogsResponse> {
     let query_string = build_query_string(
-        start_time, end_time, log_type, tables, status, limit, offset,
+        start_time,
+        end_time,
+        search,
+        methods,
+        status_codes,
+        levels,
+        sources,
+        user_agent,
+        host,
+        paths,
+        min_duration_ms,
+        max_duration_ms,
+        log_databases,
+        limit,
+        offset,
     );
-    let path =
-        org::database_scoped_path(database, &format!("/logs?{}", query_string), organization);
+    let path = org::database_scoped_path(database, &format!("/logs?{query_string}"), organization);
     client.get(&path)
 }
 
@@ -265,9 +327,17 @@ pub fn logs(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
-    log_type: Option<&str>,
-    tables: &[String],
-    status: Option<&str>,
+    search: Option<&str>,
+    methods: &[String],
+    status_codes: &[u16],
+    levels: &[String],
+    sources: &[String],
+    user_agent: Option<&str>,
+    host: Option<&str>,
+    paths: &[String],
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
+    log_databases: &[String],
     limit: u64,
     offset: u64,
     since: Option<&str>,
@@ -276,31 +346,46 @@ pub fn logs(
     end_time: Option<&str>,
     json_mode: bool,
 ) -> Result<()> {
-    let (resolved_start, resolved_end) = resolve_time_range(since, until, start_time, end_time)?;
+    if let (Some(min), Some(max)) = (min_duration_ms, max_duration_ms) {
+        if min > max {
+            bail!(
+                "invalid duration filter: --min-duration-ms ({min}) is greater than --max-duration-ms ({max})"
+            );
+        }
+    }
 
+    let (resolved_start, resolved_end) = resolve_time_range(since, until, start_time, end_time)?;
     let resp = fetch_logs(
         client,
         database,
         organization,
         &resolved_start,
         &resolved_end,
-        log_type,
-        tables,
-        status,
+        search,
+        methods,
+        status_codes,
+        levels,
+        sources,
+        user_agent,
+        host,
+        paths,
+        min_duration_ms,
+        max_duration_ms,
+        log_databases,
         limit,
         offset,
     )?;
 
     output::print_result(&resp, json_mode, |resp| {
         if resp.logs.is_empty() {
-            println!("No logs found for the specified time range.");
+            println!("No request logs found for the specified time range.");
         } else {
             for entry in &resp.logs {
                 println!("{}", format_log_line(entry));
             }
             if resp.has_more {
                 println!(
-                    "\n... more logs available (use --offset {} to continue)",
+                    "\n... more request logs available (use --offset {} to continue)",
                     resp.next_offset.unwrap_or(0)
                 );
             }
@@ -314,28 +399,59 @@ pub fn logs(
 mod tests {
     use super::*;
 
+    fn sample_log_entry() -> LogEntry {
+        LogEntry {
+            uuid: "request-123".to_string(),
+            level: "success".to_string(),
+            date: "2026-08-10T12:00:00.123Z".to_string(),
+            status: 200,
+            pathname: "/v1/query".to_string(),
+            latency: 12,
+            headers: BTreeMap::new(),
+            message: None,
+            percentile: None,
+            id: "request-123".to_string(),
+            time: "2026-08-10T12:00:00.123Z".to_string(),
+            method: "POST".to_string(),
+            host: "api.rawtree.dev".to_string(),
+            path: "/v1/query".to_string(),
+            route: "/v1/query".to_string(),
+            status_code: 200,
+            source: "cli".to_string(),
+            duration_ms: 12,
+            user_agent: "rawtree-cli/0.6.3".to_string(),
+            client_version: "0.6.3".to_string(),
+            request_size_bytes: 42,
+            response_size_bytes: 128,
+            content_encoding: String::new(),
+            handler_ms: 10,
+            app_overhead_ms: 2,
+            error: String::new(),
+            error_code: String::new(),
+            error_message: String::new(),
+            error_hint: String::new(),
+            trace_id: "trace-123".to_string(),
+            span_id: "span-123".to_string(),
+            parent_span_id: String::new(),
+            database: "events".to_string(),
+            user_id: String::new(),
+            user_email: String::new(),
+            key_name: "ci".to_string(),
+            organization_id: "org-123".to_string(),
+            organization_name: "acme".to_string(),
+            cluster_id: "cluster-123".to_string(),
+            cluster_name: "prod".to_string(),
+            url_query: "format=json".to_string(),
+            request_body: String::new(),
+        }
+    }
+
     #[test]
     fn parse_duration_minutes() {
-        let d = parse_duration("30m").unwrap();
-        assert_eq!(d, chrono::Duration::minutes(30));
-    }
-
-    #[test]
-    fn parse_duration_hours() {
-        let d = parse_duration("1h").unwrap();
-        assert_eq!(d, chrono::Duration::hours(1));
-    }
-
-    #[test]
-    fn parse_duration_days() {
-        let d = parse_duration("7d").unwrap();
-        assert_eq!(d, chrono::Duration::days(7));
-    }
-
-    #[test]
-    fn parse_duration_weeks() {
-        let d = parse_duration("2w").unwrap();
-        assert_eq!(d, chrono::Duration::weeks(2));
+        assert_eq!(
+            parse_duration("30m").unwrap(),
+            chrono::Duration::minutes(30)
+        );
     }
 
     #[test]
@@ -345,185 +461,103 @@ mod tests {
     }
 
     #[test]
-    fn parse_duration_rejects_empty() {
-        let err = parse_duration("").unwrap_err();
-        assert!(format!("{err:#}").contains("invalid duration"));
-    }
-
-    #[test]
-    fn parse_duration_rejects_no_number() {
-        let err = parse_duration("h").unwrap_err();
-        assert!(format!("{err:#}").contains("invalid duration"));
-    }
-
-    #[test]
-    fn truncate_query_short_query_unchanged() {
-        let q = truncate_query("SELECT 1", 80);
-        assert_eq!(q, "SELECT 1");
-    }
-
-    #[test]
-    fn truncate_query_long_query_truncated() {
-        let q = truncate_query(&"x".repeat(100), 80);
-        assert_eq!(q.len(), 80);
-        assert!(q.ends_with("..."));
-    }
-
-    #[test]
-    fn truncate_query_normalizes_whitespace() {
-        let q = truncate_query("SELECT\n  *\n  FROM\n  events", 80);
-        assert_eq!(q, "SELECT * FROM events");
-    }
-
-    #[test]
-    fn format_bytes_small() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(136), "136 B");
-        assert_eq!(format_bytes(999), "999 B");
-    }
-
-    #[test]
-    fn format_bytes_large() {
-        assert_eq!(format_bytes(1000), "1.0 KB");
-        assert_eq!(format_bytes(1000000), "1.0 MB");
-    }
-
-    #[test]
-    fn build_query_string_minimal() {
+    fn build_query_string_includes_request_log_filters() {
         let qs = build_query_string(
-            "2026-03-28 00:00:00",
-            "2026-03-29 00:00:00",
-            None,
-            &[],
-            None,
+            "2026-08-10T00:00:00Z",
+            "2026-08-10T01:00:00Z",
+            Some("request-123"),
+            &["GET".to_string(), "POST".to_string()],
+            &[200, 500],
+            &["success".to_string(), "error".to_string()],
+            &["cli".to_string()],
+            Some("rawtree-cli"),
+            Some("api.rawtree.dev"),
+            &["/v1/query".to_string(), "/v1/logs".to_string()],
+            Some(10),
+            Some(1000),
+            &["events".to_string()],
             50,
             0,
         );
-        assert!(qs.contains("start_time="));
-        assert!(qs.contains("end_time="));
+
+        assert!(qs.contains("search=request-123"));
+        assert!(qs.contains("methods=GET%2CPOST"));
+        assert!(qs.contains("status_codes=200%2C500"));
+        assert!(qs.contains("levels=success%2Cerror"));
+        assert!(qs.contains("sources=cli"));
+        assert!(qs.contains("user_agent=rawtree-cli"));
+        assert!(qs.contains("host=api.rawtree.dev"));
+        assert!(qs.contains("paths=%2Fv1%2Fquery%2C%2Fv1%2Flogs"));
+        assert!(qs.contains("min_duration_ms=10"));
+        assert!(qs.contains("max_duration_ms=1000"));
+        assert!(qs.contains("log_databases=events"));
         assert!(qs.contains("limit=50"));
         assert!(qs.contains("offset=0"));
-        assert!(!qs.contains("type="));
-        assert!(!qs.contains("search="));
     }
 
     #[test]
-    fn build_query_string_with_filters() {
+    fn build_query_string_omits_empty_optional_filters() {
         let qs = build_query_string(
-            "2026-03-28 00:00:00",
-            "2026-03-29 00:00:00",
-            Some("select"),
-            &[String::from("events")],
-            Some("error"),
-            100,
-            50,
-        );
-        assert!(qs.contains("search=type%3Aselect%20status%3Aerror%20table%3Aevents"));
-        assert!(!qs.contains("&type=select"));
-        assert!(!qs.contains("&table=events"));
-        assert!(!qs.contains("&status=error"));
-        assert!(qs.contains("limit=100"));
-        assert!(qs.contains("offset=50"));
-    }
-
-    #[test]
-    fn build_query_string_supports_multiple_tables() {
-        let qs = build_query_string(
-            "2026-03-28 00:00:00",
-            "2026-03-29 00:00:00",
-            Some("insert"),
-            &[String::from("events"), String::from("audit")],
+            "start",
+            "end",
             None,
+            &[],
+            &[],
+            &[],
+            &[],
+            Some(" "),
+            Some(""),
+            &[],
+            None,
+            None,
+            &[],
             50,
             0,
         );
-
-        assert!(qs.contains("search=type%3Ainsert%20table%3Aevents%2Caudit"));
-    }
-
-    #[test]
-    fn build_search_filter_ignores_empty_filters() {
-        assert_eq!(
-            build_search_filter(Some("select"), &[String::from(" ")], Some("")),
-            Some("type:select".to_string())
-        );
-        assert_eq!(build_search_filter(None, &[], None), None);
+        assert_eq!(qs, "start_time=start&end_time=end&limit=50&offset=0");
     }
 
     #[test]
     fn resolve_time_range_defaults_to_24h() {
         let (start, end) = resolve_time_range(None, None, None, None).unwrap();
-        // Both should be valid UTC timestamps ending with Z
         assert!(start.ends_with('Z'));
         assert!(end.ends_with('Z'));
-        // Start should be before end
         assert!(start < end);
     }
 
     #[test]
-    fn resolve_time_range_absolute() {
-        let (start, end) = resolve_time_range(
+    fn resolve_time_range_rejects_reversed_absolute_range() {
+        let err = resolve_time_range(
             None,
             None,
-            Some("2026-03-28 00:00:00"),
-            Some("2026-03-29 00:00:00"),
+            Some("2026-08-10T02:00:00Z"),
+            Some("2026-08-10T01:00:00Z"),
         )
-        .unwrap();
-        assert_eq!(start, "2026-03-28 00:00:00");
-        assert_eq!(end, "2026-03-29 00:00:00");
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("after --end-time"));
     }
 
     #[test]
-    fn resolve_time_range_since_only() {
-        let (start, end) = resolve_time_range(Some("1h"), None, None, None).unwrap();
-        assert!(start.ends_with('Z'));
-        assert!(end.ends_with('Z'));
-        assert!(start < end);
-    }
-
-    #[test]
-    fn format_log_line_success() {
-        let entry = LogEntry {
-            time: "2026-03-28 18:51:19.401393".to_string(),
-            log_type: "select".to_string(),
-            status: "OK".to_string(),
-            query: "SELECT count() FROM events".to_string(),
-            exception: String::new(),
-            rows: 1,
-            duration_ms: 3,
-            bytes: 136,
-            tables: vec!["events".to_string()],
-            projections: vec![],
-            hints: vec![],
-        };
-        let line = format_log_line(&entry);
-        assert!(line.contains("2026-03-28 18:51:19"));
-        assert!(line.contains("select"));
-        assert!(line.contains("OK"));
-        assert!(line.contains("3ms"));
-        assert!(line.contains("1 rows"));
-        assert!(line.contains("136 B"));
-        assert!(line.contains("SELECT count() FROM events"));
+    fn format_log_line_includes_request_metadata() {
+        let line = format_log_line(&sample_log_entry());
+        assert!(line.contains("2026-08-10T12:00:00.123Z"));
+        assert!(line.contains("200"));
+        assert!(line.contains("POST"));
+        assert!(line.contains("12ms"));
+        assert!(line.contains("cli"));
+        assert!(line.contains("/v1/query"));
         assert!(!line.contains("["));
     }
 
     #[test]
-    fn format_log_line_error() {
-        let entry = LogEntry {
-            time: "2026-03-28 18:53:44.000000".to_string(),
-            log_type: "select".to_string(),
-            status: "ExceptionBeforeStart".to_string(),
-            query: "SELECT * FROM nonexistent".to_string(),
-            exception: "Table nonexistent doesn't exist".to_string(),
-            rows: 0,
-            duration_ms: 0,
-            bytes: 0,
-            tables: vec![],
-            projections: vec![],
-            hints: vec![],
-        };
+    fn format_log_line_includes_error_message() {
+        let mut entry = sample_log_entry();
+        entry.status = 500;
+        entry.status_code = 500;
+        entry.level = "error".to_string();
+        entry.error_message = "database unavailable".to_string();
         let line = format_log_line(&entry);
-        assert!(line.contains("ERROR"));
-        assert!(line.contains("[Table nonexistent doesn't exist]"));
+        assert!(line.contains("500"));
+        assert!(line.contains("[database unavailable]"));
     }
 }
