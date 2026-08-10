@@ -339,6 +339,52 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::Logs {
+            database,
+            search,
+            methods,
+            status_codes,
+            levels,
+            sources,
+            user_agent,
+            host,
+            paths,
+            min_duration_ms,
+            max_duration_ms,
+            log_databases,
+            limit,
+            offset,
+            since,
+            until,
+            start_time,
+            end_time,
+        } => {
+            let effective_org = resolve_effective_org(&client, cli_org.clone());
+            let database = resolve_database(database)?;
+            commands::logs::logs(
+                &client,
+                &database,
+                effective_org.as_deref(),
+                search.as_deref(),
+                &methods,
+                &status_codes,
+                &levels,
+                &sources,
+                user_agent.as_deref(),
+                host.as_deref(),
+                &paths,
+                min_duration_ms,
+                max_duration_ms,
+                &log_databases,
+                limit,
+                offset,
+                since.as_deref(),
+                until.as_deref(),
+                start_time.as_deref(),
+                end_time.as_deref(),
+                json,
+            )
+        }
         Command::Query {
             database,
             sql_positional,
