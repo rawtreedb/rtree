@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -84,6 +84,38 @@ pub enum Command {
     Table {
         #[command(subcommand)]
         action: TableCommand,
+    },
+    /// View query logs for a database
+    Logs {
+        #[arg(long)]
+        database: Option<String>,
+        /// Filter by query type: select or insert
+        #[arg(long)]
+        r#type: Option<String>,
+        /// Filter by table name. Repeat to include multiple tables.
+        #[arg(long, action = ArgAction::Append)]
+        table: Vec<String>,
+        /// Filter by status: success or error
+        #[arg(long, value_parser = ["success", "error"])]
+        status: Option<String>,
+        /// Maximum number of log entries to return (default: 50, max: 200)
+        #[arg(long, default_value = "50", value_parser = clap::value_parser!(u64).range(1..=200))]
+        limit: u64,
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: u64,
+        /// Show logs from the last duration (e.g., 1h, 30m, 7d, 2w)
+        #[arg(long, conflicts_with_all = ["start_time", "end_time"])]
+        since: Option<String>,
+        /// Show logs until this duration ago (e.g., 30m)
+        #[arg(long, conflicts_with_all = ["start_time", "end_time"])]
+        until: Option<String>,
+        /// Start time in UTC (e.g., "2026-03-28T18:00:00Z")
+        #[arg(long, conflicts_with_all = ["since", "until"])]
+        start_time: Option<String>,
+        /// End time in UTC (e.g., "2026-03-28T19:00:00Z")
+        #[arg(long, conflicts_with_all = ["since", "until"])]
+        end_time: Option<String>,
     },
     /// Execute a SQL query against a database
     Query {
@@ -614,8 +646,33 @@ mod tests {
     }
 
     #[test]
-    fn logs_command_is_rejected() {
-        let result = Cli::try_parse_from(["rtree", "logs"]);
-        assert!(result.is_err(), "logs command should not be accepted");
+    fn logs_table_filter_can_be_repeated() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "logs",
+            "--database",
+            "analytics",
+            "--table",
+            "events",
+            "--table",
+            "audit",
+        ])
+        .expect("repeated --table should parse");
+
+        match cli.command {
+            Command::Logs { table, .. } => {
+                assert_eq!(table, vec!["events".to_string(), "audit".to_string()]);
+            }
+            _ => panic!("expected logs command"),
+        }
+    }
+
+    #[test]
+    fn logs_status_only_accepts_success_or_error() {
+        let ok = Cli::try_parse_from(["rtree", "logs", "--status", "success"]);
+        assert!(ok.is_ok(), "success should parse");
+
+        let err = Cli::try_parse_from(["rtree", "logs", "--status", "ok"]);
+        assert!(err.is_err(), "ok should not be accepted as a logs status");
     }
 }
