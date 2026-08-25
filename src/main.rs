@@ -269,9 +269,40 @@ fn run(cli: Cli) -> Result<()> {
                 ClusterCommand::List => {
                     commands::cluster::list(&client, effective_org.as_deref(), json)
                 }
+                ClusterCommand::Sizes => commands::cluster::sizes(&client, json),
+                ClusterCommand::Create {
+                    name,
+                    replicas,
+                    min_size,
+                    max_size,
+                    idle_timeout_minutes,
+                } => commands::cluster::create(
+                    &client,
+                    commands::cluster::ClusterCreateOptions {
+                        organization: effective_org.as_deref(),
+                        name: &name,
+                        replicas,
+                        min_size,
+                        max_size,
+                        idle_timeout_minutes,
+                    },
+                    json,
+                ),
                 ClusterCommand::Status { name_or_id } => {
                     commands::cluster::status(&client, &name_or_id, effective_org.as_deref(), json)
                 }
+                ClusterCommand::Update {
+                    name_or_id,
+                    name,
+                    idle_timeout_minutes,
+                } => commands::cluster::update(
+                    &client,
+                    &name_or_id,
+                    effective_org.as_deref(),
+                    name.as_deref(),
+                    idle_timeout_minutes,
+                    json,
+                ),
                 ClusterCommand::Stop { name_or_id } => {
                     commands::cluster::stop(&client, &name_or_id, effective_org.as_deref(), json)
                 }

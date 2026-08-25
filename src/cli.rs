@@ -1,4 +1,55 @@
+use std::{fmt, str::FromStr};
+
 use clap::{Parser, Subcommand, ValueEnum};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ClusterSizeArg {
+    pub(crate) cpu_cores: u32,
+    pub(crate) memory_gib: u32,
+}
+
+impl FromStr for ClusterSizeArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let Some((cpu_cores, memory_gib)) = value.split_once(':') else {
+            return Err(
+                "expected CPU_CORES:MEMORY_GIB with positive integers (for example, 2:8)"
+                    .to_string(),
+            );
+        };
+        if memory_gib.contains(':') {
+            return Err(
+                "expected CPU_CORES:MEMORY_GIB with positive integers (for example, 2:8)"
+                    .to_string(),
+            );
+        }
+
+        let cpu_cores = cpu_cores.parse::<u32>().map_err(|_| {
+            "expected CPU_CORES:MEMORY_GIB with positive integers (for example, 2:8)".to_string()
+        })?;
+        let memory_gib = memory_gib.parse::<u32>().map_err(|_| {
+            "expected CPU_CORES:MEMORY_GIB with positive integers (for example, 2:8)".to_string()
+        })?;
+        if cpu_cores == 0 || memory_gib == 0 {
+            return Err(
+                "expected CPU_CORES:MEMORY_GIB with positive integers (for example, 2:8)"
+                    .to_string(),
+            );
+        }
+
+        Ok(Self {
+            cpu_cores,
+            memory_gib,
+        })
+    }
+}
+
+impl fmt::Display for ClusterSizeArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}", self.cpu_cores, self.memory_gib)
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -253,10 +304,44 @@ pub enum OrganizationCommand {
 pub enum ClusterCommand {
     /// List dedicated clusters
     List,
+    /// List the CPU and memory pairs available for dedicated clusters
+    Sizes,
+    /// Create a dedicated cluster
+    #[command(
+        after_help = "Sizes use CPU_CORES:MEMORY_GIB (for example, 2:8). Run `rtree cluster sizes` to list the available sizes."
+    )]
+    Create {
+        /// Cluster name
+        #[arg(long)]
+        name: String,
+        /// Number of cluster replicas
+        #[arg(long)]
+        replicas: u32,
+        /// Minimum size per replica as CPU cores:memory GiB
+        #[arg(long, value_name = "CPU_CORES:MEMORY_GIB")]
+        min_size: ClusterSizeArg,
+        /// Maximum size per replica as CPU cores:memory GiB; defaults to the minimum
+        #[arg(long, value_name = "CPU_CORES:MEMORY_GIB")]
+        max_size: Option<ClusterSizeArg>,
+        /// Minutes without activity before automatically pausing; 0 disables idling
+        #[arg(long)]
+        idle_timeout_minutes: Option<u64>,
+    },
     /// Show the current state of a dedicated cluster
     Status {
         /// Cluster name or ID
         name_or_id: String,
+    },
+    /// Update dedicated cluster settings
+    Update {
+        /// Cluster name or ID
+        name_or_id: String,
+        /// New cluster name
+        #[arg(long)]
+        name: Option<String>,
+        /// Minutes without activity before automatically pausing; 0 disables idling
+        #[arg(long)]
+        idle_timeout_minutes: Option<u64>,
     },
     /// Request that a dedicated cluster stop
     Stop {
@@ -320,7 +405,7 @@ pub enum TableCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, ClusterCommand, Command, KeyCommand};
+    use super::{Cli, ClusterCommand, ClusterSizeArg, Command, KeyCommand};
     use clap::{error::ErrorKind, CommandFactory, Parser};
 
     #[test]
@@ -381,6 +466,98 @@ mod tests {
             Command::Cluster {
                 action: ClusterCommand::List
             }
+        ));
+    }
+
+    #[test]
+    fn cluster_sizes_parses() {
+        let cli =
+            Cli::try_parse_from(["rtree", "cluster", "sizes"]).expect("cluster sizes should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cluster {
+                action: ClusterCommand::Sizes
+            }
+        ));
+    }
+
+    #[test]
+    fn cluster_create_parses_explicit_name_and_idle_timeout() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "cluster",
+            "create",
+            "--name",
+            "production",
+            "--replicas",
+            "2",
+            "--min-size",
+            "2:8",
+            "--max-size",
+            "64:256",
+            "--idle-timeout-minutes",
+            "30",
+        ])
+        .expect("cluster create should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cluster {
+                action: ClusterCommand::Create {
+                    name,
+                    replicas,
+                    idle_timeout_minutes: Some(30),
+                    min_size,
+                    max_size: Some(max_size),
+                }
+            } if name == "production"
+                && replicas == 2
+                && min_size == ClusterSizeArg { cpu_cores: 2, memory_gib: 8 }
+                && max_size == ClusterSizeArg { cpu_cores: 64, memory_gib: 256 }
+        ));
+    }
+
+    #[test]
+    fn cluster_create_rejects_invalid_size_format() {
+        let error = match Cli::try_parse_from([
+            "rtree",
+            "cluster",
+            "create",
+            "--name",
+            "production",
+            "--replicas",
+            "2",
+            "--min-size",
+            "2x8",
+        ]) {
+            Ok(_) => panic!("cluster create should reject an invalid size"),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("CPU_CORES:MEMORY_GIB"));
+        assert!(message.contains("2:8"));
+    }
+
+    #[test]
+    fn cluster_update_parses_partial_settings() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "cluster",
+            "update",
+            "production",
+            "--idle-timeout-minutes",
+            "0",
+        ])
+        .expect("cluster update should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cluster {
+                action: ClusterCommand::Update {
+                    name_or_id,
+                    name: None,
+                    idle_timeout_minutes: Some(0),
+                }
+            } if name_or_id == "production"
         ));
     }
 
