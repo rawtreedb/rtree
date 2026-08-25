@@ -95,7 +95,7 @@ pub fn create(
     options: ClusterCreateOptions<'_>,
     json_mode: bool,
 ) -> Result<()> {
-    let sizes = load_cluster_sizes(client)?;
+    let (_, sizes) = load_cluster_sizes(client)?;
     let (min_index, min_size) =
         resolve_cluster_size(&sizes.sizes, options.min_cpu_cores, options.min_memory_gib)?;
     let (max_index, max_size) = options
@@ -235,6 +235,33 @@ pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> 
     Ok(())
 }
 
+pub fn sizes(client: &ApiClient, json_mode: bool) -> Result<()> {
+    let (value, resp) = load_cluster_sizes(client)?;
+
+    output::print_result(&value, json_mode, |_| {
+        if resp.sizes.is_empty() {
+            println!("No dedicated cluster sizes are currently available.");
+            return;
+        }
+
+        let mut table = new_cli_table();
+        table.set_header(vec!["CPU cores", "Memory (GB)"]);
+        for size in &resp.sizes {
+            table.add_row(vec![
+                Cell::new(size.cpu_cores.to_string()).set_alignment(CellAlignment::Right),
+                Cell::new(size.memory_gib.to_string()).set_alignment(CellAlignment::Right),
+            ]);
+        }
+        println!("Available dedicated cluster sizes:");
+        println!("{table}");
+        println!();
+        println!(
+            "Use `rtree cluster create --min-cpu-cores <CPU_CORES> --min-memory-gb <MEMORY_GB>` with one of these pairs."
+        );
+    });
+    Ok(())
+}
+
 pub fn status(
     client: &ApiClient,
     name_or_id: &str,
@@ -332,10 +359,13 @@ fn load_dedicated_clusters(
     Ok((value, resp))
 }
 
-fn load_cluster_sizes(client: &ApiClient) -> Result<ClusterSizesResponse> {
-    client
+fn load_cluster_sizes(client: &ApiClient) -> Result<(Value, ClusterSizesResponse)> {
+    let value: Value = client
         .get("/v1/clusters/sizes")
-        .context("invalid cluster sizes response from server")
+        .context("invalid cluster sizes response from server")?;
+    let response: ClusterSizesResponse = serde_json::from_value(value.clone())
+        .context("invalid cluster sizes response from server")?;
+    Ok((value, response))
 }
 
 fn resolve_cluster_size(

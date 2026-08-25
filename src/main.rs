@@ -269,6 +269,7 @@ fn run(cli: Cli) -> Result<()> {
                 ClusterCommand::List => {
                     commands::cluster::list(&client, effective_org.as_deref(), json)
                 }
+                ClusterCommand::Sizes => commands::cluster::sizes(&client, json),
                 ClusterCommand::Create {
                     name,
                     replicas,

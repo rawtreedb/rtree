@@ -253,7 +253,12 @@ pub enum OrganizationCommand {
 pub enum ClusterCommand {
     /// List dedicated clusters
     List,
+    /// List the CPU and memory pairs available for dedicated clusters
+    Sizes,
     /// Create a dedicated cluster
+    #[command(
+        after_help = "Run `rtree cluster sizes` to list the CPU and memory pairs available for creation."
+    )]
     Create {
         /// Cluster name
         #[arg(long)]
@@ -415,6 +420,18 @@ mod tests {
             cli.command,
             Command::Cluster {
                 action: ClusterCommand::List
+            }
+        ));
+    }
+
+    #[test]
+    fn cluster_sizes_parses() {
+        let cli =
+            Cli::try_parse_from(["rtree", "cluster", "sizes"]).expect("cluster sizes should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cluster {
+                action: ClusterCommand::Sizes
             }
         ));
     }

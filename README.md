@@ -169,6 +169,7 @@ rtree table describe --database analytics events
 ```sh
 rtree cluster list
 rtree cluster list --json
+rtree cluster sizes
 rtree cluster create \
   --name production \
   --replicas 2 \
@@ -188,7 +189,9 @@ rtree cluster delete production
 `--min-cpu-cores` and `--min-memory-gb` are required and define the initial
 size. The maximum CPU and memory flags are optional; omitting both uses the
 minimum pair for both bounds and disables vertical autoscaling. CPU/memory
-pairs are validated against the server's cluster size catalog.
+pairs are validated against the server's cluster size catalog. Run `rtree
+cluster sizes` to see the currently available pairs; add `--json` for a
+machine-readable response.
 `--idle-timeout-minutes` is optional on create and update; omit it to use the
 server default on create, and pass `0` to disable automatic idling.
 
