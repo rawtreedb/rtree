@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use comfy_table::{Cell, CellAlignment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::str::FromStr;
 
 use super::table_output::new_cli_table;
 use crate::client::ApiClient;
@@ -23,12 +24,12 @@ struct OrganizationRef {
 struct ClusterItem {
     id: String,
     name: String,
-    shared: bool,
     created_at: String,
     status: ClusterStatus,
     resources: Option<ClusterResources>,
     can_pause: bool,
     can_resume: bool,
+    idle_timeout_minutes: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -73,6 +74,134 @@ struct DeleteClusterResponse {
     deleted: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClusterSize {
+    cpu_cores: u32,
+    memory_gib: u32,
+}
+
+impl FromStr for ClusterSize {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (cpu_cores, memory_gib) = value
+            .split_once(':')
+            .ok_or_else(|| "expected CPU:MEMORY_GIB (for example, 2:8)".to_string())?;
+        let cpu_cores = cpu_cores
+            .parse::<u32>()
+            .map_err(|_| "CPU cores must be a positive integer".to_string())?;
+        let memory_gib = memory_gib
+            .parse::<u32>()
+            .map_err(|_| "memory GiB must be a positive integer".to_string())?;
+        if cpu_cores == 0 || memory_gib == 0 {
+            return Err("CPU cores and memory GiB must be positive".to_string());
+        }
+        Ok(Self {
+            cpu_cores,
+            memory_gib,
+        })
+    }
+}
+
+pub fn create(
+    client: &ApiClient,
+    options: ClusterCreateOptions<'_>,
+    json_mode: bool,
+) -> Result<()> {
+    let size = parse_cluster_size(options.size)?;
+    let autoscaling = match (options.min_size, options.max_size) {
+        (None, None) => None,
+        (Some(min_size), Some(max_size)) => Some(json!({
+            "min_size": cluster_size_json(parse_cluster_size(min_size)?),
+            "max_size": cluster_size_json(parse_cluster_size(max_size)?),
+        })),
+        _ => anyhow::bail!("--min-size and --max-size must be provided together"),
+    };
+
+    let mut body = json!({
+        "name": options.name,
+        "replicas": options.replicas,
+        "size": cluster_size_json(size),
+    });
+    if let Some(autoscaling) = autoscaling {
+        body["autoscaling"] = autoscaling;
+    }
+    if let Some(idle_timeout_minutes) = options.idle_timeout_minutes {
+        body["idle_timeout_minutes"] = json!(idle_timeout_minutes);
+    }
+
+    let value: Value = client.post(&clusters_collection_path(options.organization), &body)?;
+    let created: ClusterItem =
+        serde_json::from_value(value.clone()).context("invalid cluster response from server")?;
+
+    output::print_result(&value, json_mode, |_| {
+        println!(
+            "Cluster '{}' creation accepted (status: {}).",
+            created.name,
+            format_phase(&created.status.phase),
+        );
+        println!(
+            "Run `rtree cluster status {}` to check provisioning progress.",
+            created.name
+        );
+    });
+    Ok(())
+}
+
+pub struct ClusterCreateOptions<'a> {
+    pub organization: Option<&'a str>,
+    pub name: &'a str,
+    pub replicas: u32,
+    pub size: &'a str,
+    pub min_size: Option<&'a str>,
+    pub max_size: Option<&'a str>,
+    pub idle_timeout_minutes: Option<u64>,
+}
+
+pub fn update(
+    client: &ApiClient,
+    name_or_id: &str,
+    organization: Option<&str>,
+    name: Option<&str>,
+    idle_timeout_minutes: Option<u64>,
+    json_mode: bool,
+) -> Result<()> {
+    if name.is_none() && idle_timeout_minutes.is_none() {
+        anyhow::bail!(
+            "At least one setting is required. Pass --name and/or --idle-timeout-minutes."
+        );
+    }
+
+    let (_, response) = load_dedicated_clusters(client, organization)?;
+    let cluster = resolve_cluster(&response.clusters, name_or_id)?;
+    let mut body = serde_json::Map::new();
+    if let Some(name) = name {
+        body.insert("name".to_string(), json!(name));
+    }
+    if let Some(idle_timeout_minutes) = idle_timeout_minutes {
+        body.insert(
+            "idle_timeout_minutes".to_string(),
+            json!(idle_timeout_minutes),
+        );
+    }
+
+    let value: Value = client.patch(
+        &cluster_path(&cluster.id, None, organization),
+        &Value::Object(body),
+    )?;
+    let updated: ClusterItem =
+        serde_json::from_value(value.clone()).context("invalid cluster response from server")?;
+
+    output::print_result(&value, json_mode, |_| {
+        println!("Cluster '{}' settings updated.", updated.name);
+        println!(
+            "Idle timeout: {}",
+            format_idle_timeout(updated.idle_timeout_minutes)
+        );
+    });
+    Ok(())
+}
+
 pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> Result<()> {
     let (value, resp) = load_dedicated_clusters(client, organization)?;
 
@@ -91,6 +220,7 @@ pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> 
             "status",
             "replicas",
             "size / replica",
+            "idle timeout",
             "created",
             "id",
         ]);
@@ -105,6 +235,7 @@ pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> 
                 Cell::new(format_phase(&cluster.status.phase)),
                 Cell::new(replicas).set_alignment(CellAlignment::Right),
                 Cell::new(format_size_per_replica(cluster.resources.as_ref())),
+                Cell::new(format_idle_timeout(cluster.idle_timeout_minutes)),
                 Cell::new(format_created_at(&cluster.created_at)),
                 Cell::new(&cluster.id),
             ]);
@@ -129,6 +260,10 @@ pub fn status(
         println!("ID: {}", cluster.id);
         println!("Status: {}", format_phase(&cluster.status.phase));
         println!("Ready: {}", if cluster.status.ready { "yes" } else { "no" });
+        println!(
+            "Idle timeout: {}",
+            format_idle_timeout(cluster.idle_timeout_minutes)
+        );
         if let Some(message) = cluster.status.message.as_deref() {
             println!("Message: {message}");
         }
@@ -202,11 +337,23 @@ fn load_dedicated_clusters(
     organization: Option<&str>,
 ) -> Result<(Value, ListClustersResponse)> {
     let path = clusters_collection_path(organization);
-    let mut value: Value = client.get(&path)?;
-    filter_dedicated_clusters(&mut value)?;
+    let value: Value = client.get(&path)?;
     let resp =
         serde_json::from_value(value.clone()).context("invalid clusters response from server")?;
     Ok((value, resp))
+}
+
+fn parse_cluster_size(value: &str) -> Result<ClusterSize> {
+    value
+        .parse()
+        .map_err(|error: String| anyhow::anyhow!("Invalid cluster size '{value}': {error}."))
+}
+
+fn cluster_size_json(size: ClusterSize) -> Value {
+    json!({
+        "cpu_cores": size.cpu_cores,
+        "memory_gib": size.memory_gib,
+    })
 }
 
 fn resolve_cluster<'a>(clusters: &'a [ClusterItem], name_or_id: &str) -> Result<&'a ClusterItem> {
@@ -271,24 +418,16 @@ fn cluster_path(cluster_id: &str, action: Option<&str>, organization: Option<&st
     path
 }
 
-fn filter_dedicated_clusters(value: &mut Value) -> Result<()> {
-    let clusters = value
-        .get_mut("clusters")
-        .and_then(Value::as_array_mut)
-        .context("invalid clusters response from server: missing clusters array")?;
-    for (index, cluster) in clusters.iter().enumerate() {
-        if cluster.get("shared").and_then(Value::as_bool).is_none() {
-            anyhow::bail!(
-                "invalid clusters response from server: cluster at index {index} has a missing or invalid boolean shared field"
-            );
-        }
-    }
-    clusters.retain(|cluster| cluster.get("shared").and_then(Value::as_bool) == Some(false));
-    Ok(())
-}
-
 fn format_phase(phase: &str) -> String {
     phase.replace('_', " ")
+}
+
+fn format_idle_timeout(minutes: u64) -> String {
+    if minutes == 0 {
+        "disabled".to_string()
+    } else {
+        format!("{minutes} minutes")
+    }
 }
 
 fn format_created_at(created_at: &str) -> String {
@@ -333,9 +472,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        cluster_path, clusters_collection_path, delete_output, filter_dedicated_clusters,
-        format_created_at, format_phase, format_size_per_replica, resolve_cluster, ClusterItem,
-        ClusterResources, ClusterStatus,
+        cluster_path, cluster_size_json, clusters_collection_path, delete_output,
+        format_created_at, format_idle_timeout, format_phase, format_size_per_replica,
+        parse_cluster_size, resolve_cluster, ClusterItem, ClusterResources, ClusterStatus,
     };
 
     #[test]
@@ -363,11 +502,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cluster_size_parser_accepts_cpu_and_memory() {
+        assert_eq!(
+            parse_cluster_size("2:8").expect("valid cluster size"),
+            super::ClusterSize {
+                cpu_cores: 2,
+                memory_gib: 8,
+            }
+        );
+        assert!(parse_cluster_size("2").is_err());
+        assert!(parse_cluster_size("0:8").is_err());
+        assert!(parse_cluster_size("2:memory").is_err());
+    }
+
+    #[test]
+    fn cluster_size_json_uses_platform_field_names() {
+        assert_eq!(
+            cluster_size_json(super::ClusterSize {
+                cpu_cores: 2,
+                memory_gib: 8,
+            }),
+            json!({"cpu_cores": 2, "memory_gib": 8})
+        );
+    }
+
     fn cluster() -> ClusterItem {
         ClusterItem {
             id: "11111111-1111-1111-1111-111111111111".to_string(),
             name: "production".to_string(),
-            shared: false,
             created_at: "2026-07-14 20:38:33.004347+00".to_string(),
             status: ClusterStatus {
                 phase: "ready".to_string(),
@@ -377,6 +540,7 @@ mod tests {
             resources: None,
             can_pause: true,
             can_resume: false,
+            idle_timeout_minutes: 15,
         }
     }
 
@@ -423,7 +587,6 @@ mod tests {
         let cluster: ClusterItem = serde_json::from_value(json!({
             "id": "11111111-1111-1111-1111-111111111111",
             "name": "production",
-            "shared": false,
             "created_at": "2026-07-14 20:38:33.004347+00",
             "status": {
                 "phase": "pausing",
@@ -437,7 +600,8 @@ mod tests {
                 "memory_bytes_per_replica": 8589934592_u64
             },
             "can_pause": false,
-            "can_resume": false
+            "can_resume": false,
+            "idle_timeout_minutes": 15
         }))
         .expect("valid cluster lifecycle response");
 
@@ -449,51 +613,7 @@ mod tests {
         );
         assert!(!cluster.can_pause);
         assert!(!cluster.can_resume);
-    }
-
-    #[test]
-    fn shared_clusters_are_removed_without_changing_dedicated_cluster_fields() {
-        let dedicated = json!({
-            "id": "dedicated-id",
-            "name": "production",
-            "shared": false,
-            "created_at": "2026-07-14 20:38:33.004347+00",
-            "future_field": {"preserved": true}
-        });
-        let mut response = json!({
-            "organization": {"name": "acme"},
-            "clusters": [
-                {"id": "shared-id", "shared": true},
-                dedicated.clone()
-            ],
-            "future_top_level_field": true
-        });
-
-        filter_dedicated_clusters(&mut response).expect("valid response");
-
-        assert_eq!(response["clusters"], json!([dedicated]));
-        assert_eq!(response["future_top_level_field"], true);
-    }
-
-    #[test]
-    fn missing_or_invalid_shared_field_is_rejected() {
-        for shared_field in [None, Some(json!(null)), Some(json!("false"))] {
-            let mut cluster = json!({"id": "cluster-id"});
-            if let Some(shared) = shared_field {
-                cluster["shared"] = shared;
-            }
-            let mut response = json!({
-                "organization": {"name": "acme"},
-                "clusters": [cluster]
-            });
-
-            let error = filter_dedicated_clusters(&mut response)
-                .expect_err("missing or invalid shared field should fail");
-
-            assert!(error
-                .to_string()
-                .contains("missing or invalid boolean shared field"));
-        }
+        assert_eq!(cluster.idle_timeout_minutes, 15);
     }
 
     #[test]
@@ -518,6 +638,12 @@ mod tests {
         };
         assert_eq!(format_size_per_replica(Some(&resources)), "2 CPU / 8 GiB");
         assert_eq!(format_size_per_replica(None), "—");
+    }
+
+    #[test]
+    fn idle_timeout_is_human_readable() {
+        assert_eq!(format_idle_timeout(0), "disabled");
+        assert_eq!(format_idle_timeout(30), "30 minutes");
     }
 
     #[test]

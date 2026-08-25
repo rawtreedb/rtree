@@ -169,16 +169,31 @@ rtree table describe --database analytics events
 ```sh
 rtree cluster list
 rtree cluster list --json
+rtree cluster create \
+  --name production \
+  --replicas 2 \
+  --size 2:8 \
+  --min-size 2:8 \
+  --max-size 64:256 \
+  --idle-timeout-minutes 30
 rtree cluster status production
+rtree cluster update production --idle-timeout-minutes 60
+rtree cluster update production --idle-timeout-minutes 0
 rtree cluster stop production
 rtree cluster resume production
 rtree cluster delete production
 ```
 
-Cluster lifecycle changes are asynchronous. The `stop`, `resume`, and `delete`
-commands return as soon as the API accepts the request; they do not wait for
-the infrastructure operation to finish. After stopping or resuming a cluster,
-run `rtree cluster status <name-or-id>` to follow its current state.
+`--size`, `--min-size`, and `--max-size` use `CPU:MEMORY_GIB` values such as
+`2:8`. The minimum and maximum flags are optional and must be provided
+together. `--idle-timeout-minutes` is optional on create and update; omit it
+to use the server default on create, and pass `0` to disable automatic idling.
+
+Cluster lifecycle and provisioning changes are asynchronous. The `create`,
+`stop`, `resume`, and `delete` commands return as soon as the API accepts the
+request; they do not wait for the infrastructure operation to finish. After
+creating, stopping, or resuming a cluster, run `rtree cluster status
+<name-or-id>` to follow its current state.
 
 ## Shell Completions
 

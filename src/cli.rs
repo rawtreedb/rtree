@@ -253,10 +253,42 @@ pub enum OrganizationCommand {
 pub enum ClusterCommand {
     /// List dedicated clusters
     List,
+    /// Create a dedicated cluster
+    Create {
+        /// Cluster name
+        #[arg(long)]
+        name: String,
+        /// Number of cluster replicas
+        #[arg(long)]
+        replicas: u32,
+        /// Initial size as CPU cores:memory GiB (for example, 2:8)
+        #[arg(long, value_name = "CPU:MEMORY_GIB")]
+        size: String,
+        /// Minimum autoscaling size as CPU cores:memory GiB
+        #[arg(long, requires = "max_size", value_name = "CPU:MEMORY_GIB")]
+        min_size: Option<String>,
+        /// Maximum autoscaling size as CPU cores:memory GiB
+        #[arg(long, requires = "min_size", value_name = "CPU:MEMORY_GIB")]
+        max_size: Option<String>,
+        /// Minutes without activity before automatically pausing; 0 disables idling
+        #[arg(long)]
+        idle_timeout_minutes: Option<u64>,
+    },
     /// Show the current state of a dedicated cluster
     Status {
         /// Cluster name or ID
         name_or_id: String,
+    },
+    /// Update dedicated cluster settings
+    Update {
+        /// Cluster name or ID
+        name_or_id: String,
+        /// New cluster name
+        #[arg(long)]
+        name: Option<String>,
+        /// Minutes without activity before automatically pausing; 0 disables idling
+        #[arg(long)]
+        idle_timeout_minutes: Option<u64>,
     },
     /// Request that a dedicated cluster stop
     Stop {
@@ -381,6 +413,60 @@ mod tests {
             Command::Cluster {
                 action: ClusterCommand::List
             }
+        ));
+    }
+
+    #[test]
+    fn cluster_create_parses_explicit_name_and_idle_timeout() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "cluster",
+            "create",
+            "--name",
+            "production",
+            "--replicas",
+            "2",
+            "--size",
+            "2:8",
+            "--idle-timeout-minutes",
+            "30",
+        ])
+        .expect("cluster create should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cluster {
+                action: ClusterCommand::Create {
+                    name,
+                    replicas,
+                    size,
+                    idle_timeout_minutes: Some(30),
+                    min_size: None,
+                    max_size: None,
+                }
+            } if name == "production" && replicas == 2 && size == "2:8"
+        ));
+    }
+
+    #[test]
+    fn cluster_update_parses_partial_settings() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "cluster",
+            "update",
+            "production",
+            "--idle-timeout-minutes",
+            "0",
+        ])
+        .expect("cluster update should parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cluster {
+                action: ClusterCommand::Update {
+                    name_or_id,
+                    name: None,
+                    idle_timeout_minutes: Some(0),
+                }
+            } if name_or_id == "production"
         ));
     }
 
