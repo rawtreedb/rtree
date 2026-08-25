@@ -261,12 +261,18 @@ pub enum ClusterCommand {
         /// Number of cluster replicas
         #[arg(long)]
         replicas: u32,
-        /// Minimum size per replica from the cluster size catalog (for example, 2x8)
-        #[arg(long, value_name = "SIZE")]
-        min_size: String,
-        /// Maximum size per replica from the cluster size catalog; defaults to the minimum
-        #[arg(long, value_name = "SIZE")]
-        max_size: Option<String>,
+        /// Minimum CPU cores per replica
+        #[arg(long, value_name = "CPU_CORES")]
+        min_cpu_cores: u32,
+        /// Minimum memory GiB per replica
+        #[arg(long, value_name = "MEMORY_GIB")]
+        min_memory_gib: u32,
+        /// Maximum CPU cores per replica; defaults to the minimum
+        #[arg(long, requires = "max_memory_gib", value_name = "CPU_CORES")]
+        max_cpu_cores: Option<u32>,
+        /// Maximum memory GiB per replica; defaults to the minimum
+        #[arg(long, requires = "max_cpu_cores", value_name = "MEMORY_GIB")]
+        max_memory_gib: Option<u32>,
         /// Minutes without activity before automatically pausing; 0 disables idling
         #[arg(long)]
         idle_timeout_minutes: Option<u64>,
@@ -423,10 +429,14 @@ mod tests {
             "production",
             "--replicas",
             "2",
-            "--min-size",
-            "2x8",
-            "--max-size",
-            "64x256",
+            "--min-cpu-cores",
+            "2",
+            "--min-memory-gib",
+            "8",
+            "--max-cpu-cores",
+            "64",
+            "--max-memory-gib",
+            "256",
             "--idle-timeout-minutes",
             "30",
         ])
@@ -438,13 +448,17 @@ mod tests {
                     name,
                     replicas,
                     idle_timeout_minutes: Some(30),
-                    min_size,
-                    max_size: Some(max_size),
+                    min_cpu_cores,
+                    min_memory_gib,
+                    max_cpu_cores: Some(max_cpu_cores),
+                    max_memory_gib: Some(max_memory_gib),
                 }
             } if name == "production"
                 && replicas == 2
-                && min_size == "2x8"
-                && max_size == "64x256"
+                && min_cpu_cores == 2
+                && min_memory_gib == 8
+                && max_cpu_cores == 64
+                && max_memory_gib == 256
         ));
     }
 

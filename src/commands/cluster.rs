@@ -21,7 +21,6 @@ struct OrganizationRef {
 
 #[derive(Clone, Deserialize)]
 struct ClusterSizeItem {
-    size: String,
     cpu_cores: u32,
     memory_gib: u32,
 }
@@ -97,15 +96,17 @@ pub fn create(
     json_mode: bool,
 ) -> Result<()> {
     let sizes = load_cluster_sizes(client)?;
-    let (min_index, min_size) = resolve_cluster_size(&sizes.sizes, options.min_size)?;
+    let (min_index, min_size) =
+        resolve_cluster_size(&sizes.sizes, options.min_cpu_cores, options.min_memory_gib)?;
     let (max_index, max_size) = options
-        .max_size
-        .map(|max_size| resolve_cluster_size(&sizes.sizes, max_size))
+        .max_cpu_cores
+        .zip(options.max_memory_gib)
+        .map(|(cpu_cores, memory_gib)| resolve_cluster_size(&sizes.sizes, cpu_cores, memory_gib))
         .transpose()?
         .unwrap_or((min_index, min_size));
     if max_index < min_index {
         anyhow::bail!(
-            "--max-size must be at least as large as --min-size in the cluster size catalog"
+            "Maximum CPU/memory must be at least as large as the minimum in the cluster size catalog"
         );
     }
 
@@ -139,8 +140,10 @@ pub struct ClusterCreateOptions<'a> {
     pub organization: Option<&'a str>,
     pub name: &'a str,
     pub replicas: u32,
-    pub min_size: &'a str,
-    pub max_size: Option<&'a str>,
+    pub min_cpu_cores: u32,
+    pub min_memory_gib: u32,
+    pub max_cpu_cores: Option<u32>,
+    pub max_memory_gib: Option<u32>,
     pub idle_timeout_minutes: Option<u64>,
 }
 
@@ -337,20 +340,23 @@ fn load_cluster_sizes(client: &ApiClient) -> Result<ClusterSizesResponse> {
 
 fn resolve_cluster_size(
     sizes: &[ClusterSizeItem],
-    requested: &str,
+    cpu_cores: u32,
+    memory_gib: u32,
 ) -> Result<(usize, ClusterSize)> {
     let Some((index, size)) = sizes
         .iter()
         .enumerate()
-        .find(|(_, size)| size.size == requested)
+        .find(|(_, size)| size.cpu_cores == cpu_cores && size.memory_gib == memory_gib)
     else {
         let available = sizes
             .iter()
-            .map(|size| size.size.as_str())
+            .map(|size| format!("{} CPU cores / {} GiB", size.cpu_cores, size.memory_gib))
             .collect::<Vec<_>>()
             .join(", ");
         anyhow::bail!(
-            "Unknown cluster size '{requested}'. Available sizes: {}",
+            "Unsupported cluster resources ({} CPU cores / {} GiB). Available sizes: {}",
+            cpu_cores,
+            memory_gib,
             if available.is_empty() {
                 "none".to_string()
             } else {
@@ -544,21 +550,19 @@ mod tests {
     }
 
     #[test]
-    fn cluster_size_catalog_resolves_public_identifiers() {
+    fn cluster_size_catalog_resolves_cpu_and_memory_pairs() {
         let sizes = vec![
             ClusterSizeItem {
-                size: "2x8".to_string(),
                 cpu_cores: 2,
                 memory_gib: 8,
             },
             ClusterSizeItem {
-                size: "4x16".to_string(),
                 cpu_cores: 4,
                 memory_gib: 16,
             },
         ];
         assert_eq!(
-            resolve_cluster_size(&sizes, "2x8").expect("valid cluster size"),
+            resolve_cluster_size(&sizes, 2, 8).expect("valid cluster size"),
             (
                 0,
                 super::ClusterSize {
@@ -567,8 +571,8 @@ mod tests {
                 }
             )
         );
-        let error = resolve_cluster_size(&sizes, "small").expect_err("unknown size");
-        assert!(error.to_string().contains("2x8, 4x16"));
+        let error = resolve_cluster_size(&sizes, 1, 4).expect_err("unknown size");
+        assert!(error.to_string().contains("2 CPU cores / 8 GiB"));
     }
 
     #[test]
