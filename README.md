@@ -173,10 +173,8 @@ rtree cluster sizes
 rtree cluster create \
   --name production \
   --replicas 2 \
-  --min-cpu-cores 2 \
-  --min-memory-gb 8 \
-  --max-cpu-cores 64 \
-  --max-memory-gb 256 \
+  --min-size 2:8 \
+  --max-size 64:256 \
   --idle-timeout-minutes 30
 rtree cluster status production
 rtree cluster update production --idle-timeout-minutes 60
@@ -186,12 +184,11 @@ rtree cluster resume production
 rtree cluster delete production
 ```
 
-`--min-cpu-cores` and `--min-memory-gb` are required and define the initial
-size. The maximum CPU and memory flags are optional; omitting both uses the
-minimum pair for both bounds and disables vertical autoscaling. CPU/memory
-pairs are validated against the server's cluster size catalog. Run `rtree
-cluster sizes` to see the currently available pairs; add `--json` for a
-machine-readable response.
+`--min-size` is required and uses `CPU_CORES:MEMORY_GIB` format. `--max-size`
+is optional; omitting it uses the minimum size for both bounds and disables
+vertical autoscaling. Sizes are validated against the server's cluster size
+catalog. Run `rtree cluster sizes` to see the currently available sizes; add
+`--json` for a machine-readable response.
 `--idle-timeout-minutes` is optional on create and update; omit it to use the
 server default on create, and pass `0` to disable automatic idling.
 

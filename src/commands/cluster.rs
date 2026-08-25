@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::table_output::new_cli_table;
+use crate::cli::ClusterSizeArg;
 use crate::client::ApiClient;
 use crate::output;
 
@@ -84,30 +85,20 @@ struct DeleteClusterResponse {
     deleted: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ClusterSize {
-    cpu_cores: u32,
-    memory_gib: u32,
-}
-
 pub fn create(
     client: &ApiClient,
     options: ClusterCreateOptions<'_>,
     json_mode: bool,
 ) -> Result<()> {
     let (_, sizes) = load_cluster_sizes(client)?;
-    let (min_index, min_size) =
-        resolve_cluster_size(&sizes.sizes, options.min_cpu_cores, options.min_memory_gib)?;
+    let (min_index, min_size) = resolve_cluster_size(&sizes.sizes, options.min_size)?;
     let (max_index, max_size) = options
-        .max_cpu_cores
-        .zip(options.max_memory_gib)
-        .map(|(cpu_cores, memory_gib)| resolve_cluster_size(&sizes.sizes, cpu_cores, memory_gib))
+        .max_size
+        .map(|size| resolve_cluster_size(&sizes.sizes, size))
         .transpose()?
         .unwrap_or((min_index, min_size));
     if max_index < min_index {
-        anyhow::bail!(
-            "Maximum CPU/memory must be at least as large as the minimum in the cluster size catalog"
-        );
+        anyhow::bail!("Maximum size must be at least as large as the minimum size");
     }
 
     let body = create_request_body(
@@ -140,10 +131,8 @@ pub struct ClusterCreateOptions<'a> {
     pub organization: Option<&'a str>,
     pub name: &'a str,
     pub replicas: u32,
-    pub min_cpu_cores: u32,
-    pub min_memory_gib: u32,
-    pub max_cpu_cores: Option<u32>,
-    pub max_memory_gib: Option<u32>,
+    pub min_size: ClusterSizeArg,
+    pub max_size: Option<ClusterSizeArg>,
     pub idle_timeout_minutes: Option<u64>,
 }
 
@@ -245,9 +234,14 @@ pub fn sizes(client: &ApiClient, json_mode: bool) -> Result<()> {
         }
 
         let mut table = new_cli_table();
-        table.set_header(vec!["CPU cores", "Memory (GB)"]);
+        table.set_header(vec!["Size", "CPU cores", "Memory (GiB)"]);
         for size in &resp.sizes {
+            let size_arg = ClusterSizeArg {
+                cpu_cores: size.cpu_cores,
+                memory_gib: size.memory_gib,
+            };
             table.add_row(vec![
+                Cell::new(size_arg.to_string()),
                 Cell::new(size.cpu_cores.to_string()).set_alignment(CellAlignment::Right),
                 Cell::new(size.memory_gib.to_string()).set_alignment(CellAlignment::Right),
             ]);
@@ -256,7 +250,7 @@ pub fn sizes(client: &ApiClient, json_mode: bool) -> Result<()> {
         println!("{table}");
         println!();
         println!(
-            "Use `rtree cluster create --min-cpu-cores <CPU_CORES> --min-memory-gb <MEMORY_GB>` with one of these pairs."
+            "Use `rtree cluster create --min-size <CPU_CORES:MEMORY_GIB>` with one of these sizes."
         );
     });
     Ok(())
@@ -370,23 +364,19 @@ fn load_cluster_sizes(client: &ApiClient) -> Result<(Value, ClusterSizesResponse
 
 fn resolve_cluster_size(
     sizes: &[ClusterSizeItem],
-    cpu_cores: u32,
-    memory_gib: u32,
-) -> Result<(usize, ClusterSize)> {
-    let Some((index, size)) = sizes
-        .iter()
-        .enumerate()
-        .find(|(_, size)| size.cpu_cores == cpu_cores && size.memory_gib == memory_gib)
-    else {
+    requested: ClusterSizeArg,
+) -> Result<(usize, ClusterSizeArg)> {
+    let Some((index, size)) = sizes.iter().enumerate().find(|(_, size)| {
+        size.cpu_cores == requested.cpu_cores && size.memory_gib == requested.memory_gib
+    }) else {
         let available = sizes
             .iter()
-            .map(|size| format!("{} CPU cores / {} GiB", size.cpu_cores, size.memory_gib))
+            .map(|size| format!("{}:{}", size.cpu_cores, size.memory_gib))
             .collect::<Vec<_>>()
             .join(", ");
         anyhow::bail!(
-            "Unsupported cluster resources ({} CPU cores / {} GiB). Available sizes: {}",
-            cpu_cores,
-            memory_gib,
+            "Unsupported cluster size {}. Available sizes: {}",
+            requested,
             if available.is_empty() {
                 "none".to_string()
             } else {
@@ -396,14 +386,14 @@ fn resolve_cluster_size(
     };
     Ok((
         index,
-        ClusterSize {
+        ClusterSizeArg {
             cpu_cores: size.cpu_cores,
             memory_gib: size.memory_gib,
         },
     ))
 }
 
-fn cluster_size_json(size: ClusterSize) -> Value {
+fn cluster_size_json(size: ClusterSizeArg) -> Value {
     json!({
         "cpu_cores": size.cpu_cores,
         "memory_gib": size.memory_gib,
@@ -413,8 +403,8 @@ fn cluster_size_json(size: ClusterSize) -> Value {
 fn create_request_body(
     name: &str,
     replicas: u32,
-    min_size: ClusterSize,
-    max_size: ClusterSize,
+    min_size: ClusterSizeArg,
+    max_size: ClusterSizeArg,
     idle_timeout_minutes: Option<u64>,
 ) -> Value {
     let mut body = json!({
@@ -553,6 +543,7 @@ mod tests {
         format_size_per_replica, resolve_cluster, resolve_cluster_size, ClusterItem,
         ClusterResources, ClusterSizeItem, ClusterStatus,
     };
+    use crate::cli::ClusterSizeArg;
 
     #[test]
     fn collection_path_encodes_organization() {
@@ -592,23 +583,37 @@ mod tests {
             },
         ];
         assert_eq!(
-            resolve_cluster_size(&sizes, 2, 8).expect("valid cluster size"),
+            resolve_cluster_size(
+                &sizes,
+                ClusterSizeArg {
+                    cpu_cores: 2,
+                    memory_gib: 8,
+                },
+            )
+            .expect("valid cluster size"),
             (
                 0,
-                super::ClusterSize {
+                ClusterSizeArg {
                     cpu_cores: 2,
                     memory_gib: 8,
                 }
             )
         );
-        let error = resolve_cluster_size(&sizes, 1, 4).expect_err("unknown size");
-        assert!(error.to_string().contains("2 CPU cores / 8 GiB"));
+        let error = resolve_cluster_size(
+            &sizes,
+            ClusterSizeArg {
+                cpu_cores: 1,
+                memory_gib: 4,
+            },
+        )
+        .expect_err("unknown size");
+        assert!(error.to_string().contains("Available sizes: 2:8, 4:16"));
     }
 
     #[test]
     fn cluster_size_json_uses_platform_field_names() {
         assert_eq!(
-            cluster_size_json(super::ClusterSize {
+            cluster_size_json(ClusterSizeArg {
                 cpu_cores: 2,
                 memory_gib: 8,
             }),
@@ -622,11 +627,11 @@ mod tests {
             create_request_body(
                 "production",
                 2,
-                super::ClusterSize {
+                ClusterSizeArg {
                     cpu_cores: 2,
                     memory_gib: 8,
                 },
-                super::ClusterSize {
+                ClusterSizeArg {
                     cpu_cores: 64,
                     memory_gib: 256,
                 },
