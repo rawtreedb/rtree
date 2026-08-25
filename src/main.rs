@@ -272,7 +272,6 @@ fn run(cli: Cli) -> Result<()> {
                 ClusterCommand::Create {
                     name,
                     replicas,
-                    size,
                     min_size,
                     max_size,
                     idle_timeout_minutes,
@@ -282,8 +281,7 @@ fn run(cli: Cli) -> Result<()> {
                         organization: effective_org.as_deref(),
                         name: &name,
                         replicas,
-                        size: &size,
-                        min_size: min_size.as_deref(),
+                        min_size: &min_size,
                         max_size: max_size.as_deref(),
                         idle_timeout_minutes,
                     },

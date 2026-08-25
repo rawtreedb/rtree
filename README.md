@@ -172,9 +172,8 @@ rtree cluster list --json
 rtree cluster create \
   --name production \
   --replicas 2 \
-  --size 2:8 \
-  --min-size 2:8 \
-  --max-size 64:256 \
+  --min-size 2x8 \
+  --max-size 64x256 \
   --idle-timeout-minutes 30
 rtree cluster status production
 rtree cluster update production --idle-timeout-minutes 60
@@ -184,10 +183,12 @@ rtree cluster resume production
 rtree cluster delete production
 ```
 
-`--size`, `--min-size`, and `--max-size` use `CPU:MEMORY_GIB` values such as
-`2:8`. The minimum and maximum flags are optional and must be provided
-together. `--idle-timeout-minutes` is optional on create and update; omit it
-to use the server default on create, and pass `0` to disable automatic idling.
+`--min-size` and `--max-size` use size identifiers from the server's cluster
+size catalog, such as `2x8` and `64x256`. The minimum size is required and is
+used as the initial size; omitting the maximum uses the minimum for both bounds
+and disables vertical autoscaling. `--idle-timeout-minutes` is optional on
+create and update; omit it to use the server default on create, and pass `0` to
+disable automatic idling.
 
 Cluster lifecycle and provisioning changes are asynchronous. The `create`,
 `stop`, `resume`, and `delete` commands return as soon as the API accepts the

@@ -261,14 +261,11 @@ pub enum ClusterCommand {
         /// Number of cluster replicas
         #[arg(long)]
         replicas: u32,
-        /// Initial size as CPU cores:memory GiB (for example, 2:8)
-        #[arg(long, value_name = "CPU:MEMORY_GIB")]
-        size: String,
-        /// Minimum autoscaling size as CPU cores:memory GiB
-        #[arg(long, requires = "max_size", value_name = "CPU:MEMORY_GIB")]
-        min_size: Option<String>,
-        /// Maximum autoscaling size as CPU cores:memory GiB
-        #[arg(long, requires = "min_size", value_name = "CPU:MEMORY_GIB")]
+        /// Minimum size per replica from the cluster size catalog (for example, 2x8)
+        #[arg(long, value_name = "SIZE")]
+        min_size: String,
+        /// Maximum size per replica from the cluster size catalog; defaults to the minimum
+        #[arg(long, value_name = "SIZE")]
         max_size: Option<String>,
         /// Minutes without activity before automatically pausing; 0 disables idling
         #[arg(long)]
@@ -426,8 +423,10 @@ mod tests {
             "production",
             "--replicas",
             "2",
-            "--size",
-            "2:8",
+            "--min-size",
+            "2x8",
+            "--max-size",
+            "64x256",
             "--idle-timeout-minutes",
             "30",
         ])
@@ -438,12 +437,14 @@ mod tests {
                 action: ClusterCommand::Create {
                     name,
                     replicas,
-                    size,
                     idle_timeout_minutes: Some(30),
-                    min_size: None,
-                    max_size: None,
+                    min_size,
+                    max_size: Some(max_size),
                 }
-            } if name == "production" && replicas == 2 && size == "2:8"
+            } if name == "production"
+                && replicas == 2
+                && min_size == "2x8"
+                && max_size == "64x256"
         ));
     }
 

@@ -3,7 +3,6 @@ use chrono::{DateTime, Utc};
 use comfy_table::{Cell, CellAlignment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::str::FromStr;
 
 use super::table_output::new_cli_table;
 use crate::client::ApiClient;
@@ -18,6 +17,18 @@ struct ListClustersResponse {
 #[derive(Deserialize)]
 struct OrganizationRef {
     name: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct ClusterSizeItem {
+    size: String,
+    cpu_cores: u32,
+    memory_gib: u32,
+}
+
+#[derive(Deserialize)]
+struct ClusterSizesResponse {
+    sizes: Vec<ClusterSizeItem>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -80,55 +91,31 @@ struct ClusterSize {
     memory_gib: u32,
 }
 
-impl FromStr for ClusterSize {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (cpu_cores, memory_gib) = value
-            .split_once(':')
-            .ok_or_else(|| "expected CPU:MEMORY_GIB (for example, 2:8)".to_string())?;
-        let cpu_cores = cpu_cores
-            .parse::<u32>()
-            .map_err(|_| "CPU cores must be a positive integer".to_string())?;
-        let memory_gib = memory_gib
-            .parse::<u32>()
-            .map_err(|_| "memory GiB must be a positive integer".to_string())?;
-        if cpu_cores == 0 || memory_gib == 0 {
-            return Err("CPU cores and memory GiB must be positive".to_string());
-        }
-        Ok(Self {
-            cpu_cores,
-            memory_gib,
-        })
-    }
-}
-
 pub fn create(
     client: &ApiClient,
     options: ClusterCreateOptions<'_>,
     json_mode: bool,
 ) -> Result<()> {
-    let size = parse_cluster_size(options.size)?;
-    let autoscaling = match (options.min_size, options.max_size) {
-        (None, None) => None,
-        (Some(min_size), Some(max_size)) => Some(json!({
-            "min_size": cluster_size_json(parse_cluster_size(min_size)?),
-            "max_size": cluster_size_json(parse_cluster_size(max_size)?),
-        })),
-        _ => anyhow::bail!("--min-size and --max-size must be provided together"),
-    };
+    let sizes = load_cluster_sizes(client)?;
+    let (min_index, min_size) = resolve_cluster_size(&sizes.sizes, options.min_size)?;
+    let (max_index, max_size) = options
+        .max_size
+        .map(|max_size| resolve_cluster_size(&sizes.sizes, max_size))
+        .transpose()?
+        .unwrap_or((min_index, min_size));
+    if max_index < min_index {
+        anyhow::bail!(
+            "--max-size must be at least as large as --min-size in the cluster size catalog"
+        );
+    }
 
-    let mut body = json!({
-        "name": options.name,
-        "replicas": options.replicas,
-        "size": cluster_size_json(size),
-    });
-    if let Some(autoscaling) = autoscaling {
-        body["autoscaling"] = autoscaling;
-    }
-    if let Some(idle_timeout_minutes) = options.idle_timeout_minutes {
-        body["idle_timeout_minutes"] = json!(idle_timeout_minutes);
-    }
+    let body = create_request_body(
+        options.name,
+        options.replicas,
+        min_size,
+        max_size,
+        options.idle_timeout_minutes,
+    );
 
     let value: Value = client.post(&clusters_collection_path(options.organization), &body)?;
     let created: ClusterItem =
@@ -152,8 +139,7 @@ pub struct ClusterCreateOptions<'a> {
     pub organization: Option<&'a str>,
     pub name: &'a str,
     pub replicas: u32,
-    pub size: &'a str,
-    pub min_size: Option<&'a str>,
+    pub min_size: &'a str,
     pub max_size: Option<&'a str>,
     pub idle_timeout_minutes: Option<u64>,
 }
@@ -343,10 +329,42 @@ fn load_dedicated_clusters(
     Ok((value, resp))
 }
 
-fn parse_cluster_size(value: &str) -> Result<ClusterSize> {
-    value
-        .parse()
-        .map_err(|error: String| anyhow::anyhow!("Invalid cluster size '{value}': {error}."))
+fn load_cluster_sizes(client: &ApiClient) -> Result<ClusterSizesResponse> {
+    client
+        .get("/v1/clusters/sizes")
+        .context("invalid cluster sizes response from server")
+}
+
+fn resolve_cluster_size(
+    sizes: &[ClusterSizeItem],
+    requested: &str,
+) -> Result<(usize, ClusterSize)> {
+    let Some((index, size)) = sizes
+        .iter()
+        .enumerate()
+        .find(|(_, size)| size.size == requested)
+    else {
+        let available = sizes
+            .iter()
+            .map(|size| size.size.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "Unknown cluster size '{requested}'. Available sizes: {}",
+            if available.is_empty() {
+                "none".to_string()
+            } else {
+                available
+            }
+        );
+    };
+    Ok((
+        index,
+        ClusterSize {
+            cpu_cores: size.cpu_cores,
+            memory_gib: size.memory_gib,
+        },
+    ))
 }
 
 fn cluster_size_json(size: ClusterSize) -> Value {
@@ -354,6 +372,28 @@ fn cluster_size_json(size: ClusterSize) -> Value {
         "cpu_cores": size.cpu_cores,
         "memory_gib": size.memory_gib,
     })
+}
+
+fn create_request_body(
+    name: &str,
+    replicas: u32,
+    min_size: ClusterSize,
+    max_size: ClusterSize,
+    idle_timeout_minutes: Option<u64>,
+) -> Value {
+    let mut body = json!({
+        "name": name,
+        "replicas": replicas,
+        "size": cluster_size_json(min_size),
+        "autoscaling": {
+            "min_size": cluster_size_json(min_size),
+            "max_size": cluster_size_json(max_size),
+        },
+    });
+    if let Some(idle_timeout_minutes) = idle_timeout_minutes {
+        body["idle_timeout_minutes"] = json!(idle_timeout_minutes);
+    }
+    body
 }
 
 fn resolve_cluster<'a>(clusters: &'a [ClusterItem], name_or_id: &str) -> Result<&'a ClusterItem> {
@@ -472,9 +512,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        cluster_path, cluster_size_json, clusters_collection_path, delete_output,
-        format_created_at, format_idle_timeout, format_phase, format_size_per_replica,
-        parse_cluster_size, resolve_cluster, ClusterItem, ClusterResources, ClusterStatus,
+        cluster_path, cluster_size_json, clusters_collection_path, create_request_body,
+        delete_output, format_created_at, format_idle_timeout, format_phase,
+        format_size_per_replica, resolve_cluster, resolve_cluster_size, ClusterItem,
+        ClusterResources, ClusterSizeItem, ClusterStatus,
     };
 
     #[test]
@@ -503,17 +544,31 @@ mod tests {
     }
 
     #[test]
-    fn cluster_size_parser_accepts_cpu_and_memory() {
-        assert_eq!(
-            parse_cluster_size("2:8").expect("valid cluster size"),
-            super::ClusterSize {
+    fn cluster_size_catalog_resolves_public_identifiers() {
+        let sizes = vec![
+            ClusterSizeItem {
+                size: "2x8".to_string(),
                 cpu_cores: 2,
                 memory_gib: 8,
-            }
+            },
+            ClusterSizeItem {
+                size: "4x16".to_string(),
+                cpu_cores: 4,
+                memory_gib: 16,
+            },
+        ];
+        assert_eq!(
+            resolve_cluster_size(&sizes, "2x8").expect("valid cluster size"),
+            (
+                0,
+                super::ClusterSize {
+                    cpu_cores: 2,
+                    memory_gib: 8,
+                }
+            )
         );
-        assert!(parse_cluster_size("2").is_err());
-        assert!(parse_cluster_size("0:8").is_err());
-        assert!(parse_cluster_size("2:memory").is_err());
+        let error = resolve_cluster_size(&sizes, "small").expect_err("unknown size");
+        assert!(error.to_string().contains("2x8, 4x16"));
     }
 
     #[test]
@@ -524,6 +579,35 @@ mod tests {
                 memory_gib: 8,
             }),
             json!({"cpu_cores": 2, "memory_gib": 8})
+        );
+    }
+
+    #[test]
+    fn create_request_uses_minimum_as_initial_size_and_sends_bounds() {
+        assert_eq!(
+            create_request_body(
+                "production",
+                2,
+                super::ClusterSize {
+                    cpu_cores: 2,
+                    memory_gib: 8,
+                },
+                super::ClusterSize {
+                    cpu_cores: 64,
+                    memory_gib: 256,
+                },
+                Some(30),
+            ),
+            json!({
+                "name": "production",
+                "replicas": 2,
+                "size": {"cpu_cores": 2, "memory_gib": 8},
+                "autoscaling": {
+                    "min_size": {"cpu_cores": 2, "memory_gib": 8},
+                    "max_size": {"cpu_cores": 64, "memory_gib": 256}
+                },
+                "idle_timeout_minutes": 30
+            })
         );
     }
 
