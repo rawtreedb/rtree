@@ -173,9 +173,9 @@ rtree cluster create \
   --name production \
   --replicas 2 \
   --min-cpu-cores 2 \
-  --min-memory-gib 8 \
+  --min-memory-gb 8 \
   --max-cpu-cores 64 \
-  --max-memory-gib 256 \
+  --max-memory-gb 256 \
   --idle-timeout-minutes 30
 rtree cluster status production
 rtree cluster update production --idle-timeout-minutes 60
@@ -185,7 +185,7 @@ rtree cluster resume production
 rtree cluster delete production
 ```
 
-`--min-cpu-cores` and `--min-memory-gib` are required and define the initial
+`--min-cpu-cores` and `--min-memory-gb` are required and define the initial
 size. The maximum CPU and memory flags are optional; omitting both uses the
 minimum pair for both bounds and disables vertical autoscaling. CPU/memory
 pairs are validated against the server's cluster size catalog.

@@ -264,15 +264,15 @@ pub enum ClusterCommand {
         /// Minimum CPU cores per replica
         #[arg(long, value_name = "CPU_CORES")]
         min_cpu_cores: u32,
-        /// Minimum memory GiB per replica
-        #[arg(long, value_name = "MEMORY_GIB")]
-        min_memory_gib: u32,
+        /// Minimum memory GB per replica
+        #[arg(long, value_name = "MEMORY_GB")]
+        min_memory_gb: u32,
         /// Maximum CPU cores per replica; defaults to the minimum
-        #[arg(long, requires = "max_memory_gib", value_name = "CPU_CORES")]
+        #[arg(long, requires = "max_memory_gb", value_name = "CPU_CORES")]
         max_cpu_cores: Option<u32>,
-        /// Maximum memory GiB per replica; defaults to the minimum
-        #[arg(long, requires = "max_cpu_cores", value_name = "MEMORY_GIB")]
-        max_memory_gib: Option<u32>,
+        /// Maximum memory GB per replica; defaults to the minimum
+        #[arg(long, requires = "max_cpu_cores", value_name = "MEMORY_GB")]
+        max_memory_gb: Option<u32>,
         /// Minutes without activity before automatically pausing; 0 disables idling
         #[arg(long)]
         idle_timeout_minutes: Option<u64>,
@@ -431,11 +431,11 @@ mod tests {
             "2",
             "--min-cpu-cores",
             "2",
-            "--min-memory-gib",
+            "--min-memory-gb",
             "8",
             "--max-cpu-cores",
             "64",
-            "--max-memory-gib",
+            "--max-memory-gb",
             "256",
             "--idle-timeout-minutes",
             "30",
@@ -449,16 +449,16 @@ mod tests {
                     replicas,
                     idle_timeout_minutes: Some(30),
                     min_cpu_cores,
-                    min_memory_gib,
+                    min_memory_gb,
                     max_cpu_cores: Some(max_cpu_cores),
-                    max_memory_gib: Some(max_memory_gib),
+                    max_memory_gb: Some(max_memory_gb),
                 }
             } if name == "production"
                 && replicas == 2
                 && min_cpu_cores == 2
-                && min_memory_gib == 8
+                && min_memory_gb == 8
                 && max_cpu_cores == 64
-                && max_memory_gib == 256
+                && max_memory_gb == 256
         ));
     }
 
