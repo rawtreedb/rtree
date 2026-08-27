@@ -46,16 +46,17 @@ fn apply_database_create_config(cfg: &mut config::Config, resp: &CreateDatabaseR
     cfg.default_organization = resp.resolved_organization_name().map(ToString::to_string);
 }
 
-fn database_create_collection_path(organization: Option<&str>) -> String {
-    org::databases_collection_path(organization)
+fn database_create_collection_path(organization: Option<&str>, cluster: Option<&str>) -> String {
+    org::databases_collection_path(organization, cluster)
 }
 
 fn create_database_response(
     client: &ApiClient,
     name: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
 ) -> Result<CreateDatabaseResponse> {
-    let path = database_create_collection_path(organization);
+    let path = database_create_collection_path(organization, cluster);
     client.post(&path, &json!({ "name": name }))
 }
 
@@ -63,16 +64,22 @@ fn create_and_persist(
     client: &ApiClient,
     name: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
 ) -> Result<CreateDatabaseResponse> {
-    let resp = create_database_response(client, name, organization)?;
+    let resp = create_database_response(client, name, organization, cluster)?;
     let mut cfg = config::load()?;
     apply_database_create_config(&mut cfg, &resp);
     config::save(&cfg)?;
     Ok(resp)
 }
 
-pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> Result<()> {
-    let path = org::databases_collection_path(organization);
+pub fn list(
+    client: &ApiClient,
+    organization: Option<&str>,
+    cluster: Option<&str>,
+    json_mode: bool,
+) -> Result<()> {
+    let path = org::databases_collection_path(organization, cluster);
     let resp: ListDatabasesResponse = client.get(&path)?;
     output::print_result(
         &json!({
@@ -109,9 +116,10 @@ pub fn create(
     client: &ApiClient,
     name: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     json_mode: bool,
 ) -> Result<()> {
-    let resp = create_and_persist(client, name, organization)?;
+    let resp = create_and_persist(client, name, organization, cluster)?;
 
     output::print_result(
         &json!({
@@ -152,13 +160,14 @@ pub fn delete(
     client: &ApiClient,
     name: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     json_mode: bool,
 ) -> Result<()> {
-    let mut path = format!("/v1/databases/{}", urlencoding::encode(name));
-    if let Some(org) = organization {
-        path.push_str("?organization=");
-        path.push_str(&urlencoding::encode(org));
-    }
+    let path = org::scoped_path(
+        &format!("/v1/databases/{}", urlencoding::encode(name)),
+        organization,
+        cluster,
+    );
     let resp: DeleteDatabaseResponse = client.delete(&path)?;
     output::print_result(
         &json!({"deleted": resp.deleted, "name": name}),
@@ -218,10 +227,10 @@ mod tests {
 
     #[test]
     fn database_create_collection_path_uses_databases_endpoint() {
-        assert_eq!(database_create_collection_path(None), "/v1/databases");
+        assert_eq!(database_create_collection_path(None, None), "/v1/databases");
         assert_eq!(
-            database_create_collection_path(Some("team alpha")),
-            "/v1/databases?organization=team%20alpha"
+            database_create_collection_path(Some("team alpha"), Some("prod/eu")),
+            "/v1/databases?organization=team%20alpha&cluster=prod%2Feu"
         );
     }
 }

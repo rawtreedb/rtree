@@ -22,6 +22,7 @@ pub fn query(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     sql: &str,
     limit: Option<u64>,
     json_mode: bool,
@@ -33,7 +34,7 @@ pub fn query(
 
     let body = json!({ "sql": sql });
 
-    let path = org::database_scoped_path(database, "/query", organization);
+    let path = org::database_scoped_path(database, "/query", organization, cluster);
     let raw = client.post_raw(&path, &body)?;
 
     if let Ok(value) = serde_json::from_str::<Value>(&raw) {

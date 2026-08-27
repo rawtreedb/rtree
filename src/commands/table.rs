@@ -44,9 +44,10 @@ pub fn list(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     json_mode: bool,
 ) -> Result<()> {
-    let list_path = org::database_scoped_path(database, "/tables", organization);
+    let list_path = org::database_scoped_path(database, "/tables", organization, cluster);
     let resp: TablesResponse = client.get(&list_path)?;
     output::print_result(
         &json!({
@@ -81,11 +82,12 @@ pub fn describe(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     table: &str,
     json_mode: bool,
 ) -> Result<()> {
     let describe_path =
-        org::database_scoped_path(database, &format!("/tables/{table}"), organization);
+        org::database_scoped_path(database, &format!("/tables/{table}"), organization, cluster);
     let resp: DescribeTableResponse = client.get(&describe_path)?;
     output::print_result(
         &json!({
