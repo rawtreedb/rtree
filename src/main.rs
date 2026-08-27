@@ -87,6 +87,20 @@ fn resolve_cluster(cli_cluster: Option<String>) -> Option<String> {
     resolve_cluster_from_sources(cli_cluster, env_cluster, cfg_cluster)
 }
 
+fn resolve_login_cluster_from_sources(
+    cli_cluster: Option<String>,
+    env_cluster: Option<String>,
+) -> Option<String> {
+    cli_cluster.or(env_cluster)
+}
+
+fn resolve_login_cluster(cli_cluster: Option<String>) -> Option<String> {
+    let env_cluster = std::env::var("RAWTREE_CLUSTER").ok();
+    // Login replaces saved credentials and defaults, so stale saved cluster
+    // context must not constrain the new authentication selection.
+    resolve_login_cluster_from_sources(cli_cluster, env_cluster)
+}
+
 fn resolve_org_from_sources(
     cli_org: Option<String>,
     env_org: Option<String>,
@@ -186,6 +200,7 @@ fn run(cli: Cli) -> Result<()> {
     let token = resolve_token(cli_api_key.clone());
     let client = ApiClient::new(url.clone(), token);
     let effective_cluster = resolve_cluster(cli_cluster.clone());
+    let login_cluster = resolve_login_cluster(cli_cluster);
 
     match command {
         Command::Login {
@@ -205,7 +220,7 @@ fn run(cli: Cli) -> Result<()> {
                     &client,
                     &api_key,
                     cli_org.clone(),
-                    effective_cluster.clone(),
+                    login_cluster.clone(),
                     database,
                     json,
                 )
@@ -221,7 +236,7 @@ fn run(cli: Cli) -> Result<()> {
                         no_browser,
                         timeout_seconds,
                         cli_org.clone(),
-                        effective_cluster.clone(),
+                        login_cluster.clone(),
                         database,
                         json,
                     ),
@@ -231,7 +246,7 @@ fn run(cli: Cli) -> Result<()> {
                             &client,
                             &api_key,
                             cli_org.clone(),
-                            effective_cluster.clone(),
+                            login_cluster.clone(),
                             database,
                             json,
                         )
@@ -244,7 +259,7 @@ fn run(cli: Cli) -> Result<()> {
                     &email,
                     &password,
                     cli_org.clone(),
-                    effective_cluster.clone(),
+                    login_cluster.clone(),
                     database,
                     json,
                 )
@@ -254,7 +269,7 @@ fn run(cli: Cli) -> Result<()> {
                     no_browser,
                     timeout_seconds,
                     cli_org.clone(),
-                    effective_cluster.clone(),
+                    login_cluster.clone(),
                     database,
                     json,
                 )
@@ -556,8 +571,8 @@ mod tests {
     use super::constants::DEFAULT_API_URL;
     use super::{
         resolve_cluster_from_sources, resolve_database_from_sources, resolve_effective_org_with,
-        resolve_org_from_sources, resolve_token_from_sources, resolve_url_from_sources,
-        should_prompt_for_login_method,
+        resolve_login_cluster_from_sources, resolve_org_from_sources, resolve_token_from_sources,
+        resolve_url_from_sources, should_prompt_for_login_method,
     };
 
     #[test]
@@ -584,6 +599,20 @@ mod tests {
     fn resolve_cluster_uses_config_when_cli_and_env_missing() {
         let resolved = resolve_cluster_from_sources(None, None, Some("cfg-cluster".to_string()));
         assert_eq!(resolved.as_deref(), Some("cfg-cluster"));
+    }
+
+    #[test]
+    fn login_cluster_uses_cli_then_env_without_saved_config() {
+        let cli = resolve_login_cluster_from_sources(
+            Some("cli-cluster".to_string()),
+            Some("env-cluster".to_string()),
+        );
+        assert_eq!(cli.as_deref(), Some("cli-cluster"));
+
+        let env = resolve_login_cluster_from_sources(None, Some("env-cluster".to_string()));
+        assert_eq!(env.as_deref(), Some("env-cluster"));
+
+        assert_eq!(resolve_login_cluster_from_sources(None, None), None);
     }
 
     #[test]
