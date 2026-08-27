@@ -58,7 +58,7 @@ rtree open
 
 - Interactive login selection: `rtree login`
 - Direct API key save: `rtree login --api-key rt_123`
-- Select defaults during auth: `rtree login --org team-alpha --database analytics`
+- Select a database during auth in a specific cluster: `rtree login --org team-alpha --cluster production --database analytics`
 
 Interactive login offers browser-based Rawtree authentication or securely prompts
 for an existing API key. Non-interactive and `--json` login continue to use
@@ -98,6 +98,7 @@ Resolution priority by setting:
 - API URL: `--api-url` -> `RAWTREE_API_URL` -> config file -> `https://api.rawtree.com`
 - Database: `--database` -> `RAWTREE_DATABASE` -> config file default database
 - Organization: `--org` -> `RAWTREE_ORG` -> config file default organization
+- Cluster routing: `--cluster` for the current invocation; API keys remain restricted to their bound cluster
 
 ## Commands
 
@@ -112,6 +113,7 @@ Global flags:
 
 - `--api-url <URL>`
 - `--org <ORG>`
+- `--cluster <CLUSTER>`
 - `--json`
 
 ## Common Workflows
@@ -145,13 +147,13 @@ rtree query --json --sql "SELECT * FROM events LIMIT 10"
 
 ```sh
 # Inline JSON
-rtree insert --database analytics --table events --data '{"event":"page_view"}'
+rtree insert --org team-alpha --cluster production --database analytics --table events --data '{"event":"page_view"}'
 
 # JSON/JSONL file
-rtree insert --database analytics --table events --file ./events.jsonl
+rtree insert --org team-alpha --cluster production --database analytics --table events --file ./events.jsonl
 
 # Public URL to JSON/JSONL
-rtree insert --database analytics --table events --url https://example.com/events.jsonl
+rtree insert --org team-alpha --cluster production --database analytics --table events --url https://example.com/events.jsonl
 ```
 
 ### Keys and tables

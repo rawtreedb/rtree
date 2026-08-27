@@ -82,6 +82,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub org: Option<String>,
 
+    /// Cluster name used to route database and data requests
+    #[arg(long, global = true)]
+    pub cluster: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -739,6 +743,23 @@ mod tests {
         .expect("--api-url should parse before subcommand");
 
         assert_eq!(cli.api_url.as_deref(), Some("https://api.rawtree.com"));
+    }
+
+    #[test]
+    fn cluster_can_be_passed_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "query",
+            "--cluster",
+            "production",
+            "--database",
+            "analytics",
+            "--sql",
+            "SELECT 1",
+        ])
+        .expect("global --cluster should parse after the subcommand");
+
+        assert_eq!(cli.cluster.as_deref(), Some("production"));
     }
 
     #[test]

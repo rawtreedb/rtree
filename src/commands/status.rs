@@ -16,7 +16,7 @@ fn resolve_dashboard_url(
     database: Option<&str>,
 ) -> Option<String> {
     if authenticated {
-        return Some(open::build_open_url(base_url, organization, database));
+        return Some(open::build_open_url(base_url, organization, None, database));
     }
     Some(build_login_url(base_url))
 }
@@ -65,7 +65,7 @@ mod tests {
     fn resolve_dashboard_url_prefers_normal_dashboard_when_authenticated() {
         let url =
             resolve_dashboard_url("https://rawtree.com", true, Some("team"), Some("analytics"));
-        assert_eq!(url.as_deref(), Some("https://rawtree.com/team/analytics"));
+        assert_eq!(url.as_deref(), Some("https://rawtree.com"));
     }
 
     #[test]

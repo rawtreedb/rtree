@@ -334,8 +334,9 @@ fn resolve_selected_browser_database(
 fn list_databases_for_organization(
     client: &ApiClient,
     organization_name: &str,
+    cluster: Option<&str>,
 ) -> Result<Vec<String>> {
-    let path = org::databases_collection_path(Some(organization_name));
+    let path = org::databases_collection_path(Some(organization_name), cluster);
     let resp: ListDatabasesResponse = client.get(&path)?;
     Ok(resp.databases.into_iter().map(|item| item.name).collect())
 }
@@ -344,13 +345,14 @@ fn resolve_browser_auth_selection(
     base_url: &str,
     token: &str,
     cli_org: Option<&str>,
+    cli_cluster: Option<&str>,
     cli_database: Option<&str>,
     json_mode: bool,
 ) -> Result<AuthSelection> {
     let authed_client = ApiClient::new(base_url.to_string(), Some(token.to_string()));
     let organizations = match org::list_organizations(&authed_client) {
         Ok(items) => items,
-        Err(err) if cli_org.is_some() || cli_database.is_some() => {
+        Err(err) if cli_org.is_some() || cli_cluster.is_some() || cli_database.is_some() => {
             return Err(err.context("failed to list organizations for auth-time selection"));
         }
         Err(_err) => return Ok(AuthSelection::default()),
@@ -360,6 +362,12 @@ fn resolve_browser_auth_selection(
     let selected_org = match selected_org {
         Some(item) => item,
         None => {
+            if let Some(cluster_name) = cli_cluster {
+                anyhow::bail!(
+                    "Cannot select cluster '{}' because no organization is available.",
+                    cluster_name
+                );
+            }
             if let Some(database_name) = cli_database {
                 anyhow::bail!(
                     "Cannot select database '{}' because no organization is available.",
@@ -371,12 +379,13 @@ fn resolve_browser_auth_selection(
     };
 
     let selected_database = resolve_selected_browser_database(
-        list_databases_for_organization(&authed_client, &selected_org.name).with_context(|| {
-            format!(
-                "failed to list databases for organization '{}'",
-                selected_org.name
-            )
-        }),
+        list_databases_for_organization(&authed_client, &selected_org.name, cli_cluster)
+            .with_context(|| {
+                format!(
+                    "failed to list databases for organization '{}'",
+                    selected_org.name
+                )
+            }),
         &selected_org.name,
         cli_database,
         json_mode,
@@ -392,6 +401,7 @@ fn resolve_auth_selection(
     base_url: &str,
     token: &str,
     cli_org: Option<&str>,
+    cli_cluster: Option<&str>,
     cli_database: Option<&str>,
     env_org: Option<&str>,
     cfg_org: Option<&str>,
@@ -399,7 +409,7 @@ fn resolve_auth_selection(
     let authed_client = ApiClient::new(base_url.to_string(), Some(token.to_string()));
     let organizations = match org::list_organizations(&authed_client) {
         Ok(items) => items,
-        Err(err) if cli_org.is_some() || cli_database.is_some() => {
+        Err(err) if cli_org.is_some() || cli_cluster.is_some() || cli_database.is_some() => {
             return Err(err.context("failed to list organizations for auth-time selection"));
         }
         Err(_err) => return Ok(AuthSelection::default()),
@@ -409,6 +419,12 @@ fn resolve_auth_selection(
     let selected_org = match selected_org {
         Some(item) => item,
         None => {
+            if let Some(cluster_name) = cli_cluster {
+                anyhow::bail!(
+                    "Cannot select cluster '{}' because no organization is available.",
+                    cluster_name
+                );
+            }
             if let Some(database_name) = cli_database {
                 anyhow::bail!(
                     "Cannot select database '{}' because no organization is available.",
@@ -420,12 +436,13 @@ fn resolve_auth_selection(
     };
 
     let selected_database = resolve_selected_database(
-        list_databases_for_organization(&authed_client, &selected_org.name).with_context(|| {
-            format!(
-                "failed to list databases for organization '{}'",
-                selected_org.name
-            )
-        }),
+        list_databases_for_organization(&authed_client, &selected_org.name, cli_cluster)
+            .with_context(|| {
+                format!(
+                    "failed to list databases for organization '{}'",
+                    selected_org.name
+                )
+            }),
         &selected_org.name,
         cli_database,
     )?;
@@ -479,10 +496,11 @@ fn resolve_api_key_auth_selection(
     base_url: &str,
     token: &str,
     cli_org: Option<&str>,
+    cli_cluster: Option<&str>,
     cli_database: Option<&str>,
 ) -> Result<AuthSelection> {
     let authed_client = ApiClient::new(base_url.to_string(), Some(token.to_string()));
-    let (keys_path, tables_path) = api_key_context_paths(cli_org, cli_database);
+    let (keys_path, tables_path) = api_key_context_paths(cli_org, cli_cluster, cli_database);
 
     match authed_client.get::<DatabaseContextResponse>(&keys_path) {
         Ok(context) => return auth_selection_from_database_context(context, cli_org, cli_database),
@@ -497,13 +515,17 @@ fn resolve_api_key_auth_selection(
     }
 }
 
-fn api_key_context_paths(cli_org: Option<&str>, cli_database: Option<&str>) -> (String, String) {
+fn api_key_context_paths(
+    cli_org: Option<&str>,
+    cli_cluster: Option<&str>,
+    cli_database: Option<&str>,
+) -> (String, String) {
     let keys_path = cli_database
-        .map(|database| org::database_scoped_path(database, "/keys", cli_org))
-        .unwrap_or_else(|| "/v1/keys".to_string());
+        .map(|database| org::database_scoped_path(database, "/keys", cli_org, cli_cluster))
+        .unwrap_or_else(|| org::scoped_path("/v1/keys", cli_org, cli_cluster));
     let tables_path = cli_database
-        .map(|database| org::database_scoped_path(database, "/tables", cli_org))
-        .unwrap_or_else(|| "/v1/tables".to_string());
+        .map(|database| org::database_scoped_path(database, "/tables", cli_org, cli_cluster))
+        .unwrap_or_else(|| org::scoped_path("/v1/tables", cli_org, cli_cluster));
     (keys_path, tables_path)
 }
 
@@ -523,6 +545,7 @@ fn update_and_save_config(
     client: &ApiClient,
     resp: &AuthResponse,
     cli_org: Option<&str>,
+    cli_cluster: Option<&str>,
     cli_database: Option<&str>,
 ) -> Result<AuthSelection> {
     let mut cfg = config::load()?;
@@ -531,6 +554,7 @@ fn update_and_save_config(
         &client.base_url,
         &resp.token,
         cli_org,
+        cli_cluster,
         cli_database,
         env_org.as_deref(),
         cfg.default_organization.as_deref(),
@@ -544,6 +568,7 @@ fn update_and_save_browser_config(
     client: &ApiClient,
     resp: &AuthResponse,
     cli_org: Option<&str>,
+    cli_cluster: Option<&str>,
     cli_database: Option<&str>,
     json_mode: bool,
 ) -> Result<AuthSelection> {
@@ -552,6 +577,7 @@ fn update_and_save_browser_config(
         &client.base_url,
         &resp.token,
         cli_org,
+        cli_cluster,
         cli_database,
         json_mode,
     )?;
@@ -585,6 +611,7 @@ pub fn login(
     email: &str,
     password: &str,
     organization: Option<String>,
+    cluster: Option<String>,
     database: Option<String>,
     json_mode: bool,
 ) -> Result<()> {
@@ -593,8 +620,13 @@ pub fn login(
         &json!({"email": email, "password": password}),
     )?;
 
-    let selection =
-        update_and_save_config(client, &resp, organization.as_deref(), database.as_deref())?;
+    let selection = update_and_save_config(
+        client,
+        &resp,
+        organization.as_deref(),
+        cluster.as_deref(),
+        database.as_deref(),
+    )?;
     let selected_organization = selection.organization.clone();
     let selected_database = selection.database.clone();
 
@@ -618,6 +650,7 @@ pub fn login_with_api_key(
     client: &ApiClient,
     api_key: &str,
     organization: Option<String>,
+    cluster: Option<String>,
     database: Option<String>,
     json_mode: bool,
 ) -> Result<()> {
@@ -650,6 +683,7 @@ pub fn login_with_api_key(
         &client.base_url,
         api_key,
         organization.as_deref(),
+        cluster.as_deref(),
         database.as_deref(),
     )
     .map_err(map_validation_error)?;
@@ -744,6 +778,7 @@ pub fn login_with_browser(
     no_browser: bool,
     timeout_seconds: u64,
     organization: Option<String>,
+    cluster: Option<String>,
     database: Option<String>,
     json_mode: bool,
 ) -> Result<()> {
@@ -788,6 +823,7 @@ pub fn login_with_browser(
                     client,
                     &auth,
                     organization.as_deref(),
+                    cluster.as_deref(),
                     database.as_deref(),
                     json_mode,
                 )?;
@@ -1098,7 +1134,7 @@ mod tests {
 
     #[test]
     fn api_key_context_paths_do_not_invent_organization() {
-        let (keys_path, tables_path) = api_key_context_paths(None, Some("analytics"));
+        let (keys_path, tables_path) = api_key_context_paths(None, None, Some("analytics"));
 
         assert_eq!(keys_path, "/v1/keys?database=analytics");
         assert_eq!(tables_path, "/v1/tables?database=analytics");
@@ -1106,15 +1142,16 @@ mod tests {
 
     #[test]
     fn api_key_context_paths_include_explicit_organization() {
-        let (keys_path, tables_path) = api_key_context_paths(Some("team alpha"), Some("analytics"));
+        let (keys_path, tables_path) =
+            api_key_context_paths(Some("team alpha"), Some("prod/eu"), Some("analytics"));
 
         assert_eq!(
             keys_path,
-            "/v1/keys?database=analytics&organization=team%20alpha"
+            "/v1/keys?database=analytics&organization=team%20alpha&cluster=prod%2Feu"
         );
         assert_eq!(
             tables_path,
-            "/v1/tables?database=analytics&organization=team%20alpha"
+            "/v1/tables?database=analytics&organization=team%20alpha&cluster=prod%2Feu"
         );
     }
 

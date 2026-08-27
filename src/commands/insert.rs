@@ -318,6 +318,7 @@ pub fn insert(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     table: &str,
     data: Option<&str>,
     file: Option<&str>,
@@ -325,7 +326,8 @@ pub fn insert(
     transform: Option<&str>,
     json_mode: bool,
 ) -> Result<()> {
-    let base_path = org::database_scoped_path(database, &format!("/tables/{table}"), organization);
+    let base_path =
+        org::database_scoped_path(database, &format!("/tables/{table}"), organization, cluster);
     let api_path = append_transform_param(&base_path, transform);
 
     // Small inline data — send in one request
@@ -341,6 +343,7 @@ pub fn insert(
             client,
             database,
             organization,
+            cluster,
             table,
             raw_url,
             transform,
@@ -356,6 +359,7 @@ pub fn insert(
             client,
             database,
             organization,
+            cluster,
             table,
             path,
             transform,
@@ -373,16 +377,18 @@ pub fn insert(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_from_url(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     table: &str,
     url: &str,
     transform: Option<&str>,
     json_mode: bool,
 ) -> Result<()> {
-    let base_path = build_url_ingest_path(database, organization, table, url);
+    let base_path = build_url_ingest_path(database, organization, cluster, table, url);
     let path = append_transform_param(&base_path, transform);
     let resp = client.post_empty_stream(&path)?;
     let summary = consume_url_insert_stream(resp, json_mode)?;
@@ -406,6 +412,7 @@ fn insert_from_url(
 fn build_url_ingest_path(
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     table: &str,
     url: &str,
 ) -> String {
@@ -414,6 +421,7 @@ fn build_url_ingest_path(
         database,
         &format!("/tables/{table}?url={encoded_url}"),
         organization,
+        cluster,
     )
 }
 
@@ -590,10 +598,12 @@ fn consume_url_insert_stream_reader<R: BufRead>(
 
 /// Stream JSONL: reader thread reads raw lines into batches, sender threads
 /// build JSON by string concatenation, gzip-compress, and POST to server.
+#[allow(clippy::too_many_arguments)]
 fn insert_jsonl_streaming(
     client: &ApiClient,
     database: &str,
     organization: Option<&str>,
+    cluster: Option<&str>,
     table: &str,
     path: &str,
     transform: Option<&str>,
@@ -626,7 +636,8 @@ fn insert_jsonl_streaming(
     let first_error: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
 
     // Spawn sender threads — each reuses a body buffer, compresses, and POSTs
-    let base_url = org::database_scoped_path(database, &format!("/tables/{table}"), organization);
+    let base_url =
+        org::database_scoped_path(database, &format!("/tables/{table}"), organization, cluster);
     let url = append_transform_param(&base_url, transform);
     let mut handles = Vec::with_capacity(senders);
     for _ in 0..senders {
@@ -747,12 +758,17 @@ mod tests {
 
     #[test]
     fn url_ingest_path_uses_query_param_route() {
-        let path =
-            build_url_ingest_path("events_2", None, "events", "https://example.com/a b.ndjson");
+        let path = build_url_ingest_path(
+            "events_2",
+            None,
+            Some("production"),
+            "events",
+            "https://example.com/a b.ndjson",
+        );
 
         assert_eq!(
             path,
-            "/v1/tables/events?url=https%3A%2F%2Fexample.com%2Fa%20b.ndjson&database=events_2"
+            "/v1/tables/events?url=https%3A%2F%2Fexample.com%2Fa%20b.ndjson&database=events_2&cluster=production"
         );
     }
 

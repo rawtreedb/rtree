@@ -164,6 +164,7 @@ fn run(cli: Cli) -> Result<()> {
         api_url: cli_url,
         json,
         org: cli_org,
+        cluster: cli_cluster,
         command,
     } = cli;
 
@@ -189,6 +190,7 @@ fn run(cli: Cli) -> Result<()> {
                     &client,
                     &api_key,
                     cli_org.clone(),
+                    cli_cluster.clone(),
                     database,
                     json,
                 )
@@ -204,6 +206,7 @@ fn run(cli: Cli) -> Result<()> {
                         no_browser,
                         timeout_seconds,
                         cli_org.clone(),
+                        cli_cluster.clone(),
                         database,
                         json,
                     ),
@@ -213,6 +216,7 @@ fn run(cli: Cli) -> Result<()> {
                             &client,
                             &api_key,
                             cli_org.clone(),
+                            cli_cluster.clone(),
                             database,
                             json,
                         )
@@ -220,13 +224,22 @@ fn run(cli: Cli) -> Result<()> {
                 }
             } else if let Some(email) = email {
                 let password = prompt_password_if_missing(password)?;
-                commands::auth::login(&client, &email, &password, cli_org.clone(), database, json)
+                commands::auth::login(
+                    &client,
+                    &email,
+                    &password,
+                    cli_org.clone(),
+                    cli_cluster.clone(),
+                    database,
+                    json,
+                )
             } else {
                 commands::auth::login_with_browser(
                     &client,
                     no_browser,
                     timeout_seconds,
                     cli_org.clone(),
+                    cli_cluster.clone(),
                     database,
                     json,
                 )
@@ -236,16 +249,33 @@ fn run(cli: Cli) -> Result<()> {
         Command::Database { action } => match action {
             DatabaseCommand::List => {
                 let effective_org = resolve_effective_org(&client, cli_org.clone());
-                commands::database::list(&client, effective_org.as_deref(), json)
+                commands::database::list(
+                    &client,
+                    effective_org.as_deref(),
+                    cli_cluster.as_deref(),
+                    json,
+                )
             }
             DatabaseCommand::Create { name } => {
                 let effective_org = resolve_effective_org(&client, cli_org.clone());
-                commands::database::create(&client, &name, effective_org.as_deref(), json)
+                commands::database::create(
+                    &client,
+                    &name,
+                    effective_org.as_deref(),
+                    cli_cluster.as_deref(),
+                    json,
+                )
             }
             DatabaseCommand::Use { name } => commands::database::use_database(&name, json),
             DatabaseCommand::Delete { name } => {
                 let effective_org = resolve_effective_org(&client, cli_org.clone());
-                commands::database::delete(&client, &name, effective_org.as_deref(), json)
+                commands::database::delete(
+                    &client,
+                    &name,
+                    effective_org.as_deref(),
+                    cli_cluster.as_deref(),
+                    json,
+                )
             }
         },
         Command::Organization { action } => match action {
@@ -319,7 +349,13 @@ fn run(cli: Cli) -> Result<()> {
             match action {
                 KeyCommand::List { database } => {
                     let database = resolve_database(database)?;
-                    commands::keys::list(&client, &database, effective_org.as_deref(), json)
+                    commands::keys::list(
+                        &client,
+                        &database,
+                        effective_org.as_deref(),
+                        cli_cluster.as_deref(),
+                        json,
+                    )
                 }
                 KeyCommand::Create {
                     database,
@@ -331,6 +367,7 @@ fn run(cli: Cli) -> Result<()> {
                         &client,
                         &database,
                         effective_org.as_deref(),
+                        cli_cluster.as_deref(),
                         &name,
                         &permission,
                         json,
@@ -345,6 +382,7 @@ fn run(cli: Cli) -> Result<()> {
                         &client,
                         &database,
                         effective_org.as_deref(),
+                        cli_cluster.as_deref(),
                         &id_or_token,
                         json,
                     )
@@ -356,7 +394,13 @@ fn run(cli: Cli) -> Result<()> {
             match action {
                 TableCommand::List { database } => {
                     let database = resolve_database(database)?;
-                    commands::table::list(&client, &database, effective_org.as_deref(), json)
+                    commands::table::list(
+                        &client,
+                        &database,
+                        effective_org.as_deref(),
+                        cli_cluster.as_deref(),
+                        json,
+                    )
                 }
                 TableCommand::Describe { database, table } => {
                     let database = resolve_database(database)?;
@@ -364,6 +408,7 @@ fn run(cli: Cli) -> Result<()> {
                         &client,
                         &database,
                         effective_org.as_deref(),
+                        cli_cluster.as_deref(),
                         &table,
                         json,
                     )
@@ -396,6 +441,7 @@ fn run(cli: Cli) -> Result<()> {
                 &client,
                 &database,
                 effective_org.as_deref(),
+                cli_cluster.as_deref(),
                 search.as_deref(),
                 &methods,
                 &status_codes,
@@ -429,6 +475,7 @@ fn run(cli: Cli) -> Result<()> {
                 &client,
                 &database,
                 effective_org.as_deref(),
+                cli_cluster.as_deref(),
                 &sql,
                 limit,
                 json,
@@ -449,6 +496,7 @@ fn run(cli: Cli) -> Result<()> {
                 &client,
                 &database,
                 effective_org.as_deref(),
+                cli_cluster.as_deref(),
                 &table,
                 data.as_deref(),
                 file.as_deref(),
@@ -467,6 +515,7 @@ fn run(cli: Cli) -> Result<()> {
             commands::open::open(
                 &ui_base_url,
                 effective_org.as_deref(),
+                cli_cluster.as_deref(),
                 database.as_deref(),
                 json,
             )
