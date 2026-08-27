@@ -64,11 +64,12 @@ Interactive login offers browser-based Rawtree authentication or securely prompt
 for an existing API key. Non-interactive and `--json` login continue to use
 browser-based authentication unless `--api-key` is provided.
 
-When using `--api-key`, the CLI stores the API key directly and resolves organization/database defaults from that key.
+When using `--api-key`, the CLI stores the API key directly, resolves organization/database
+defaults from that key, and validates any selected cluster against the key's bound cluster.
 With `--json`, API key login returns:
 
 ```json
-{"success":true,"config_path":"<path>","database":"<name>","organization":"<name>"}
+{"success":true,"config_path":"<path>","database":"<name>","organization":"<name>","cluster":"<name>"}
 ```
 
 ### Token resolution
@@ -98,7 +99,9 @@ Resolution priority by setting:
 - API URL: `--api-url` -> `RAWTREE_API_URL` -> config file -> `https://api.rawtree.com`
 - Database: `--database` -> `RAWTREE_DATABASE` -> config file default database
 - Organization: `--org` -> `RAWTREE_ORG` -> config file default organization
-- Cluster routing: `--cluster` for the current invocation; API keys remain restricted to their bound cluster
+- Cluster: `--cluster` -> `RAWTREE_CLUSTER` -> config file default cluster
+
+API keys remain restricted to their bound cluster regardless of which selector source is used.
 
 ## Commands
 
@@ -125,6 +128,9 @@ rtree organization list
 rtree organization create team-alpha
 rtree organization use team-alpha
 
+rtree cluster list
+rtree cluster use production
+
 rtree database list
 rtree database create analytics
 rtree database use analytics
@@ -147,13 +153,13 @@ rtree query --json --sql "SELECT * FROM events LIMIT 10"
 
 ```sh
 # Inline JSON
-rtree insert --org team-alpha --cluster production --database analytics --table events --data '{"event":"page_view"}'
+rtree insert --table events --data '{"event":"page_view"}'
 
 # JSON/JSONL file
-rtree insert --org team-alpha --cluster production --database analytics --table events --file ./events.jsonl
+rtree insert --table events --file ./events.jsonl
 
 # Public URL to JSON/JSONL
-rtree insert --org team-alpha --cluster production --database analytics --table events --url https://example.com/events.jsonl
+rtree insert --table events --url https://example.com/events.jsonl
 ```
 
 ### Keys and tables
@@ -178,6 +184,7 @@ rtree cluster create \
   --min-size 2:8 \
   --max-size 64:256 \
   --idle-timeout-minutes 30
+rtree cluster use production
 rtree cluster status production
 rtree cluster update production --idle-timeout-minutes 60
 rtree cluster update production --idle-timeout-minutes 0

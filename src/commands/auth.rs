@@ -93,6 +93,7 @@ enum CliDeviceTokenPoll {
 #[derive(Clone, Debug, Default)]
 struct AuthSelection {
     organization: Option<String>,
+    cluster: Option<String>,
     database: Option<String>,
 }
 
@@ -104,6 +105,16 @@ struct DatabaseItem {
 #[derive(Deserialize)]
 struct ListDatabasesResponse {
     databases: Vec<DatabaseItem>,
+}
+
+#[derive(Deserialize)]
+struct ClusterSelectionItem {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ListClustersResponse {
+    clusters: Vec<ClusterSelectionItem>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +142,7 @@ fn apply_auth_config(
     cfg.token = Some(resp.token.clone());
     cfg.email = Some(resp.email.clone());
     cfg.default_organization = selection.organization.clone();
+    cfg.default_cluster = selection.cluster.clone();
     cfg.default_database = selection.database.clone();
     if cfg.url.is_none() && base_url != DEFAULT_API_URL {
         cfg.url = Some(base_url.to_string());
@@ -193,6 +205,29 @@ fn select_database(
     }
 
     Ok(database_names.first().cloned())
+}
+
+fn select_cluster(
+    cluster_names: &[String],
+    selected_org: &str,
+    requested_cluster: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(name) = requested_cluster {
+        return cluster_names
+            .iter()
+            .find(|cluster| cluster.as_str() == name)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cluster '{}' not found in organization '{}'.",
+                    name,
+                    selected_org
+                )
+            });
+    }
+
+    Ok(cluster_names.first().cloned())
 }
 
 fn prompt_for_selection(label: &str, names: &[String], json_mode: bool) -> Result<Option<String>> {
@@ -304,6 +339,19 @@ fn select_or_prompt_database(
     select_single_or_prompt("database", database_names, json_mode)
 }
 
+fn select_or_prompt_cluster(
+    cluster_names: &[String],
+    selected_org: &str,
+    requested_cluster: Option<&str>,
+    json_mode: bool,
+) -> Result<Option<String>> {
+    if requested_cluster.is_some() {
+        return select_cluster(cluster_names, selected_org, requested_cluster);
+    }
+
+    select_single_or_prompt("cluster", cluster_names, json_mode)
+}
+
 fn resolve_selected_database(
     database_names_result: Result<Vec<String>>,
     selected_org: &str,
@@ -339,6 +387,15 @@ fn list_databases_for_organization(
     let path = org::databases_collection_path(Some(organization_name), cluster);
     let resp: ListDatabasesResponse = client.get(&path)?;
     Ok(resp.databases.into_iter().map(|item| item.name).collect())
+}
+
+fn list_clusters_for_organization(
+    client: &ApiClient,
+    organization_name: &str,
+) -> Result<Vec<String>> {
+    let path = org::scoped_path("/v1/clusters", Some(organization_name), None);
+    let resp: ListClustersResponse = client.get(&path)?;
+    Ok(resp.clusters.into_iter().map(|item| item.name).collect())
 }
 
 fn resolve_browser_auth_selection(
@@ -378,14 +435,30 @@ fn resolve_browser_auth_selection(
         }
     };
 
+    let selected_cluster = select_or_prompt_cluster(
+        &list_clusters_for_organization(&authed_client, &selected_org.name).with_context(|| {
+            format!(
+                "failed to list clusters for organization '{}'",
+                selected_org.name
+            )
+        })?,
+        &selected_org.name,
+        cli_cluster,
+        json_mode,
+    )?;
+
     let selected_database = resolve_selected_browser_database(
-        list_databases_for_organization(&authed_client, &selected_org.name, cli_cluster)
-            .with_context(|| {
-                format!(
-                    "failed to list databases for organization '{}'",
-                    selected_org.name
-                )
-            }),
+        list_databases_for_organization(
+            &authed_client,
+            &selected_org.name,
+            selected_cluster.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to list databases for organization '{}'",
+                selected_org.name
+            )
+        }),
         &selected_org.name,
         cli_database,
         json_mode,
@@ -393,6 +466,7 @@ fn resolve_browser_auth_selection(
 
     Ok(AuthSelection {
         organization: Some(selected_org.name),
+        cluster: selected_cluster,
         database: selected_database,
     })
 }
@@ -435,20 +509,36 @@ fn resolve_auth_selection(
         }
     };
 
+    let selected_cluster = select_cluster(
+        &list_clusters_for_organization(&authed_client, &selected_org.name).with_context(|| {
+            format!(
+                "failed to list clusters for organization '{}'",
+                selected_org.name
+            )
+        })?,
+        &selected_org.name,
+        cli_cluster,
+    )?;
+
     let selected_database = resolve_selected_database(
-        list_databases_for_organization(&authed_client, &selected_org.name, cli_cluster)
-            .with_context(|| {
-                format!(
-                    "failed to list databases for organization '{}'",
-                    selected_org.name
-                )
-            }),
+        list_databases_for_organization(
+            &authed_client,
+            &selected_org.name,
+            selected_cluster.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to list databases for organization '{}'",
+                selected_org.name
+            )
+        }),
         &selected_org.name,
         cli_database,
     )?;
 
     Ok(AuthSelection {
         organization: Some(selected_org.name),
+        cluster: selected_cluster,
         database: selected_database,
     })
 }
@@ -456,6 +546,7 @@ fn resolve_auth_selection(
 fn auth_selection_from_database_context(
     context: DatabaseContextResponse,
     cli_org: Option<&str>,
+    cluster: Option<&str>,
     cli_database: Option<&str>,
 ) -> Result<AuthSelection> {
     let organization = context
@@ -488,6 +579,7 @@ fn auth_selection_from_database_context(
 
     Ok(AuthSelection {
         organization: Some(organization),
+        cluster: cluster.map(str::to_string),
         database: Some(database),
     })
 }
@@ -503,9 +595,13 @@ fn resolve_api_key_auth_selection(
     let (keys_path, tables_path) = api_key_context_paths(cli_org, cli_cluster, cli_database);
 
     match authed_client.get::<DatabaseContextResponse>(&keys_path) {
-        Ok(context) => return auth_selection_from_database_context(context, cli_org, cli_database),
+        Ok(context) => {
+            auth_selection_from_database_context(context, cli_org, cli_cluster, cli_database)
+        }
         Err(keys_err) => match authed_client.get::<DatabaseContextResponse>(&tables_path) {
-            Ok(context) => auth_selection_from_database_context(context, cli_org, cli_database),
+            Ok(context) => {
+                auth_selection_from_database_context(context, cli_org, cli_cluster, cli_database)
+            }
             Err(tables_err) => Err(anyhow::anyhow!(
                 "failed to resolve API key database context: {}; fallback /v1/tables failed: {}",
                 keys_err,
@@ -591,6 +687,10 @@ fn print_selected_context(selection: &AuthSelection) {
         Some(org_name) => println!("Selected organization: {}", org_name),
         None => println!("Selected organization: none"),
     }
+    match &selection.cluster {
+        Some(cluster_name) => println!("Selected cluster: {}", cluster_name),
+        None => println!("Selected cluster: none"),
+    }
     match &selection.database {
         Some(database_name) => println!("Selected database: {}", database_name),
         None => {
@@ -628,6 +728,7 @@ pub fn login(
         database.as_deref(),
     )?;
     let selected_organization = selection.organization.clone();
+    let selected_cluster = selection.cluster.clone();
     let selected_database = selection.database.clone();
 
     output::print_result(
@@ -635,6 +736,7 @@ pub fn login(
             "email": resp.email,
             "status": "logged_in",
             "selected_organization": selected_organization,
+            "selected_cluster": selected_cluster,
             "selected_database": selected_database,
         }),
         json_mode,
@@ -691,6 +793,7 @@ pub fn login_with_api_key(
     cfg.token = Some(api_key.to_string());
     cfg.email = None;
     cfg.default_organization = selection.organization.clone();
+    cfg.default_cluster = selection.cluster.clone();
     cfg.default_database = selection.database.clone();
     if cfg.url.is_none() && client.base_url != DEFAULT_API_URL {
         cfg.url = Some(client.base_url.clone());
@@ -700,6 +803,7 @@ pub fn login_with_api_key(
     let config_path = config::path().map_err(map_write_error)?;
     let config_path = config_path.display().to_string();
     let selected_organization = selection.organization.clone();
+    let selected_cluster = selection.cluster.clone();
     let selected_database = selection.database.clone();
 
     output::print_result(
@@ -708,6 +812,7 @@ pub fn login_with_api_key(
             "config_path": config_path,
             "database": selected_database,
             "organization": selected_organization,
+            "cluster": selected_cluster,
         }),
         json_mode,
         |_| {
@@ -828,6 +933,7 @@ pub fn login_with_browser(
                     json_mode,
                 )?;
                 let selected_organization = selection.organization.clone();
+                let selected_cluster = selection.cluster.clone();
                 let selected_database = selection.database.clone();
                 output::print_result(
                     &json!({
@@ -835,6 +941,7 @@ pub fn login_with_browser(
                         "status": "logged_in",
                         "method": "browser",
                         "selected_organization": selected_organization,
+                        "selected_cluster": selected_cluster,
                         "selected_database": selected_database,
                     }),
                     json_mode,
@@ -874,9 +981,10 @@ mod tests {
     use super::{
         api_key_context_paths, apply_auth_config, auth_selection_from_database_context,
         clear_auth_config, effective_timeout_seconds, parse_login_method, parse_selection_number,
-        prompt_for_selection, resolve_selected_database, select_database,
-        select_or_prompt_database, select_or_prompt_organization, select_organization,
-        AuthResponse, AuthSelection, DatabaseContextResponse, LoginMethod, LOGIN_METHOD_LABELS,
+        prompt_for_selection, resolve_selected_database, select_cluster, select_database,
+        select_or_prompt_cluster, select_or_prompt_database, select_or_prompt_organization,
+        select_organization, AuthResponse, AuthSelection, DatabaseContextResponse, LoginMethod,
+        LOGIN_METHOD_LABELS,
     };
     use crate::config::Config;
     use crate::org::OrganizationItem;
@@ -901,6 +1009,7 @@ mod tests {
         let resp = sample_auth_response();
         let selection = AuthSelection {
             organization: Some("team_alpha".to_string()),
+            cluster: Some("production".to_string()),
             database: Some("analytics".to_string()),
         };
         apply_auth_config(&mut cfg, "https://api.rawtree.com", &resp, &selection);
@@ -908,6 +1017,7 @@ mod tests {
         assert_eq!(cfg.token.as_deref(), Some("jwt"));
         assert_eq!(cfg.email.as_deref(), Some("user@example.com"));
         assert_eq!(cfg.default_organization.as_deref(), Some("team_alpha"));
+        assert_eq!(cfg.default_cluster.as_deref(), Some("production"));
         assert_eq!(cfg.default_database.as_deref(), Some("analytics"));
         assert_eq!(cfg.url, None);
     }
@@ -927,6 +1037,7 @@ mod tests {
         let mut cfg = Config {
             default_database: Some("old_database".to_string()),
             default_organization: Some("old_team".to_string()),
+            default_cluster: Some("old_cluster".to_string()),
             ..Config::default()
         };
         let resp = sample_auth_response();
@@ -934,6 +1045,7 @@ mod tests {
         apply_auth_config(&mut cfg, "https://api.rawtree.com", &resp, &selection);
 
         assert_eq!(cfg.default_organization, None);
+        assert_eq!(cfg.default_cluster, None);
         assert_eq!(cfg.default_database, None);
     }
 
@@ -992,6 +1104,28 @@ mod tests {
 
         let err = select_database(&databases, "team_alpha", Some("missing"));
         assert!(err.is_err(), "unknown CLI database should fail");
+    }
+
+    #[test]
+    fn select_cluster_prefers_requested_name_and_fails_when_unknown() {
+        let clusters = vec!["production".to_string(), "staging".to_string()];
+
+        let selected = select_cluster(&clusters, "team_alpha", Some("staging"))
+            .expect("selection should succeed")
+            .expect("cluster should exist");
+        assert_eq!(selected, "staging");
+
+        let err = select_cluster(&clusters, "team_alpha", Some("missing"));
+        assert!(err.is_err(), "unknown cluster should fail");
+    }
+
+    #[test]
+    fn browser_cluster_selection_uses_single_cluster_without_prompt() {
+        let clusters = vec!["production".to_string()];
+        let selected = select_or_prompt_cluster(&clusters, "team_alpha", None, true)
+            .expect("selection should succeed")
+            .expect("cluster should exist");
+        assert_eq!(selected, "production");
     }
 
     #[test]
@@ -1106,10 +1240,12 @@ mod tests {
             }"#,
         )
         .expect("valid context");
-        let selection = auth_selection_from_database_context(context, None, None)
-            .expect("context should select");
+        let selection =
+            auth_selection_from_database_context(context, None, Some("production"), None)
+                .expect("context should select");
 
         assert_eq!(selection.organization.as_deref(), Some("team_alpha"));
+        assert_eq!(selection.cluster.as_deref(), Some("production"));
         assert_eq!(selection.database.as_deref(), Some("analytics"));
     }
 
@@ -1122,9 +1258,13 @@ mod tests {
             }"#,
         )
         .expect("valid context");
-        let err =
-            auth_selection_from_database_context(context, Some("team_alpha"), Some("billing"))
-                .expect_err("conflicting database should fail");
+        let err = auth_selection_from_database_context(
+            context,
+            Some("team_alpha"),
+            Some("production"),
+            Some("billing"),
+        )
+        .expect_err("conflicting database should fail");
 
         assert!(
             err.to_string().contains("API key belongs to database"),
@@ -1163,7 +1303,7 @@ mod tests {
             url: Some("https://api.rawtree.com".to_string()),
             default_database: Some("analytics".to_string()),
             default_organization: Some("team_alpha".to_string()),
-            ..Config::default()
+            default_cluster: Some("production".to_string()),
         };
 
         clear_auth_config(&mut cfg);
@@ -1173,6 +1313,7 @@ mod tests {
         assert_eq!(cfg.url, None);
         assert_eq!(cfg.default_database, None);
         assert_eq!(cfg.default_organization, None);
+        assert_eq!(cfg.default_cluster, None);
     }
 
     #[test]

@@ -41,9 +41,16 @@ impl CreateDatabaseResponse {
     }
 }
 
-fn apply_database_create_config(cfg: &mut config::Config, resp: &CreateDatabaseResponse) {
+fn apply_database_create_config(
+    cfg: &mut config::Config,
+    resp: &CreateDatabaseResponse,
+    cluster: Option<&str>,
+) {
     cfg.default_database = Some(resp.name.clone());
     cfg.default_organization = resp.resolved_organization_name().map(ToString::to_string);
+    if let Some(cluster) = cluster {
+        cfg.default_cluster = Some(cluster.to_string());
+    }
 }
 
 fn database_create_collection_path(organization: Option<&str>, cluster: Option<&str>) -> String {
@@ -68,7 +75,7 @@ fn create_and_persist(
 ) -> Result<CreateDatabaseResponse> {
     let resp = create_database_response(client, name, organization, cluster)?;
     let mut cfg = config::load()?;
-    apply_database_create_config(&mut cfg, &resp);
+    apply_database_create_config(&mut cfg, &resp, cluster);
     config::save(&cfg)?;
     Ok(resp)
 }
@@ -205,11 +212,12 @@ mod tests {
             }),
         };
 
-        apply_database_create_config(&mut cfg, &resp);
+        apply_database_create_config(&mut cfg, &resp, Some("production"));
 
         assert_eq!(cfg.token.as_deref(), Some("jwt.token.value"));
         assert_eq!(cfg.email.as_deref(), Some("user@example.com"));
         assert_eq!(cfg.default_organization.as_deref(), Some("new_team"));
+        assert_eq!(cfg.default_cluster.as_deref(), Some("production"));
         assert_eq!(cfg.default_database.as_deref(), Some("analytics"));
     }
 

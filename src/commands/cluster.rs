@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use super::table_output::new_cli_table;
 use crate::cli::ClusterSizeArg;
 use crate::client::ApiClient;
+use crate::config;
 use crate::output;
 
 #[derive(Deserialize)]
@@ -252,6 +253,17 @@ pub fn sizes(client: &ApiClient, json_mode: bool) -> Result<()> {
         println!(
             "Use `rtree cluster create --min-size <CPU_CORES:MEMORY_GIB>` with one of these sizes."
         );
+    });
+    Ok(())
+}
+
+pub fn use_cluster(name: &str, json_mode: bool) -> Result<()> {
+    let mut cfg = config::load()?;
+    cfg.default_cluster = Some(name.to_string());
+    config::save(&cfg)?;
+
+    output::print_result(&json!({"default_cluster": name}), json_mode, |_| {
+        println!("Default cluster set to '{}'.", name)
     });
     Ok(())
 }
