@@ -82,7 +82,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub org: Option<String>,
 
-    /// Cluster name used to route database and data requests
+    /// Cluster name (overrides RAWTREE_CLUSTER env and config file)
     #[arg(long, global = true)]
     pub cluster: Option<String>,
 
@@ -94,7 +94,7 @@ pub struct Cli {
 pub enum Command {
     /// Log in and save credentials
     #[command(
-        after_help = "API key mode:\n  --api-key saves an API key directly without browser authentication.\n\nAPI key output (--json):\n  {\"success\":true,\"config_path\":\"<path>\",\"database\":\"<name>\",\"organization\":\"<name>\"}"
+        after_help = "API key mode:\n  --api-key saves an API key directly without browser authentication.\n\nAPI key output (--json):\n  {\"success\":true,\"config_path\":\"<path>\",\"database\":\"<name>\",\"organization\":\"<name>\",\"cluster\":\"<name>\"}"
     )]
     Login {
         #[arg(long, hide = true)]
@@ -331,6 +331,11 @@ pub enum ClusterCommand {
         #[arg(long)]
         idle_timeout_minutes: Option<u64>,
     },
+    /// Set the default cluster
+    Use {
+        /// Cluster name
+        name: String,
+    },
     /// Show the current state of a dedicated cluster
     Status {
         /// Cluster name or ID
@@ -563,6 +568,19 @@ mod tests {
                 }
             } if name_or_id == "production"
         ));
+    }
+
+    #[test]
+    fn cluster_use_parses() {
+        let cli = Cli::try_parse_from(["rtree", "cluster", "use", "production"])
+            .expect("cluster use should parse");
+
+        match cli.command {
+            Command::Cluster {
+                action: ClusterCommand::Use { name },
+            } => assert_eq!(name, "production"),
+            _ => panic!("expected cluster use command"),
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use super::table_output::new_cli_table;
 use crate::cli::ClusterSizeArg;
 use crate::client::ApiClient;
+use crate::config;
 use crate::output;
 
 #[derive(Deserialize)]
@@ -83,6 +84,31 @@ impl LifecycleAction {
 #[derive(Deserialize)]
 struct DeleteClusterResponse {
     deleted: bool,
+}
+
+fn renamed_default_cluster(
+    current_default_cluster: Option<&str>,
+    old_name: &str,
+    cluster_id: &str,
+    new_name: &str,
+) -> Option<String> {
+    match current_default_cluster {
+        Some(current) if current == old_name || current == cluster_id => Some(new_name.to_string()),
+        Some(current) => Some(current.to_string()),
+        None => None,
+    }
+}
+
+fn default_cluster_after_delete(
+    current_default_cluster: Option<&str>,
+    deleted_name: &str,
+    cluster_id: &str,
+) -> Option<String> {
+    match current_default_cluster {
+        Some(current) if current == deleted_name || current == cluster_id => None,
+        Some(current) => Some(current.to_string()),
+        None => None,
+    }
 }
 
 pub fn create(
@@ -169,6 +195,16 @@ pub fn update(
     )?;
     let updated: ClusterItem =
         serde_json::from_value(value.clone()).context("invalid cluster response from server")?;
+    if name.is_some() {
+        let mut cfg = config::load()?;
+        cfg.default_cluster = renamed_default_cluster(
+            cfg.default_cluster.as_deref(),
+            &cluster.name,
+            &cluster.id,
+            &updated.name,
+        );
+        config::save(&cfg)?;
+    }
 
     output::print_result(&value, json_mode, |_| {
         println!("Cluster '{}' settings updated.", updated.name);
@@ -256,6 +292,17 @@ pub fn sizes(client: &ApiClient, json_mode: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn use_cluster(name: &str, json_mode: bool) -> Result<()> {
+    let mut cfg = config::load()?;
+    cfg.default_cluster = Some(name.to_string());
+    config::save(&cfg)?;
+
+    output::print_result(&json!({"default_cluster": name}), json_mode, |_| {
+        println!("Default cluster set to '{}'.", name)
+    });
+    Ok(())
+}
+
 pub fn status(
     client: &ApiClient,
     name_or_id: &str,
@@ -322,6 +369,15 @@ pub fn delete(
     let path = cluster_path(&cluster.id, None, organization);
     let result: DeleteClusterResponse = client.delete(&path)?;
     let value = delete_output(&cluster, result.deleted);
+    if result.deleted {
+        let mut cfg = config::load()?;
+        cfg.default_cluster = default_cluster_after_delete(
+            cfg.default_cluster.as_deref(),
+            &cluster.name,
+            &cluster.id,
+        );
+        config::save(&cfg)?;
+    }
 
     output::print_result(&value, json_mode, |_| {
         if result.deleted {
@@ -539,9 +595,9 @@ mod tests {
 
     use super::{
         cluster_path, cluster_size_json, clusters_collection_path, create_request_body,
-        delete_output, format_created_at, format_idle_timeout, format_phase,
-        format_size_per_replica, resolve_cluster, resolve_cluster_size, ClusterItem,
-        ClusterResources, ClusterSizeItem, ClusterStatus,
+        default_cluster_after_delete, delete_output, format_created_at, format_idle_timeout,
+        format_phase, format_size_per_replica, renamed_default_cluster, resolve_cluster,
+        resolve_cluster_size, ClusterItem, ClusterResources, ClusterSizeItem, ClusterStatus,
     };
     use crate::cli::ClusterSizeArg;
 
@@ -702,6 +758,41 @@ mod tests {
                 "id": "11111111-1111-1111-1111-111111111111",
                 "name": "production"
             })
+        );
+    }
+
+    #[test]
+    fn renamed_cluster_updates_matching_default_name_or_id() {
+        assert_eq!(
+            renamed_default_cluster(Some("production"), "production", "cluster-id", "analytics")
+                .as_deref(),
+            Some("analytics")
+        );
+        assert_eq!(
+            renamed_default_cluster(Some("cluster-id"), "production", "cluster-id", "analytics")
+                .as_deref(),
+            Some("analytics")
+        );
+        assert_eq!(
+            renamed_default_cluster(Some("other"), "production", "cluster-id", "analytics")
+                .as_deref(),
+            Some("other")
+        );
+    }
+
+    #[test]
+    fn deleted_cluster_clears_matching_default_name_or_id() {
+        assert_eq!(
+            default_cluster_after_delete(Some("production"), "production", "cluster-id"),
+            None
+        );
+        assert_eq!(
+            default_cluster_after_delete(Some("cluster-id"), "production", "cluster-id"),
+            None
+        );
+        assert_eq!(
+            default_cluster_after_delete(Some("other"), "production", "cluster-id").as_deref(),
+            Some("other")
         );
     }
 

@@ -13,10 +13,16 @@ fn resolve_dashboard_url(
     base_url: &str,
     authenticated: bool,
     organization: Option<&str>,
+    cluster: Option<&str>,
     database: Option<&str>,
 ) -> Option<String> {
     if authenticated {
-        return Some(open::build_open_url(base_url, organization, None, database));
+        return Some(open::build_open_url(
+            base_url,
+            organization,
+            cluster,
+            database,
+        ));
     }
     Some(build_login_url(base_url))
 }
@@ -27,11 +33,13 @@ pub fn status(resolved_url: &str, json_mode: bool) -> Result<()> {
     let user = cfg.email.clone();
     let database = cfg.default_database.clone();
     let organization = cfg.default_organization.clone();
+    let cluster = cfg.default_cluster.clone();
     let ui_base_url = open::resolve_ui_base_url();
     let dashboard_url = resolve_dashboard_url(
         &ui_base_url,
         authenticated,
         organization.as_deref(),
+        cluster.as_deref(),
         database.as_deref(),
     );
 
@@ -41,6 +49,7 @@ pub fn status(resolved_url: &str, json_mode: bool) -> Result<()> {
             "user": user.as_deref(),
             "database": database.as_deref(),
             "organization": organization.as_deref(),
+            "cluster": cluster.as_deref(),
             "api_url": resolved_url,
             "dashboard_url": dashboard_url.as_deref(),
         }),
@@ -51,6 +60,7 @@ pub fn status(resolved_url: &str, json_mode: bool) -> Result<()> {
             println!("User: {}", user.as_deref().unwrap_or("-"));
             println!("Database: {}", database.as_deref().unwrap_or("-"));
             println!("Organization: {}", organization.as_deref().unwrap_or("-"));
+            println!("Cluster: {}", cluster.as_deref().unwrap_or("-"));
             println!("Dashboard URL: {}", dashboard_url.as_deref().unwrap_or("-"));
         },
     );
@@ -63,9 +73,17 @@ mod tests {
 
     #[test]
     fn resolve_dashboard_url_prefers_normal_dashboard_when_authenticated() {
-        let url =
-            resolve_dashboard_url("https://rawtree.com", true, Some("team"), Some("analytics"));
-        assert_eq!(url.as_deref(), Some("https://rawtree.com"));
+        let url = resolve_dashboard_url(
+            "https://rawtree.com",
+            true,
+            Some("team"),
+            Some("production"),
+            Some("analytics"),
+        );
+        assert_eq!(
+            url.as_deref(),
+            Some("https://rawtree.com/team/production?database=analytics")
+        );
     }
 
     #[test]
@@ -74,6 +92,7 @@ mod tests {
             "https://rawtree.com",
             false,
             Some("team"),
+            Some("production"),
             Some("analytics"),
         );
         assert_eq!(url.as_deref(), Some("https://rawtree.com/login"));
@@ -81,7 +100,7 @@ mod tests {
 
     #[test]
     fn resolve_dashboard_url_uses_login_when_not_authenticated_without_database_context() {
-        let url = resolve_dashboard_url("https://rawtree.com", false, None, None);
+        let url = resolve_dashboard_url("https://rawtree.com", false, None, None, None);
         assert_eq!(url.as_deref(), Some("https://rawtree.com/login"));
     }
 
