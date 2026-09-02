@@ -1,6 +1,9 @@
 use std::{fmt, str::FromStr};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use anyhow::Result;
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ClusterSizeArg {
@@ -49,6 +52,84 @@ impl fmt::Display for ClusterSizeArg {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}:{}", self.cpu_cores, self.memory_gib)
     }
+}
+
+#[derive(Args, Clone, Debug, Default)]
+pub(crate) struct S3StorageArgs {
+    /// Customer-owned S3 bucket for database data
+    #[arg(long, value_name = "BUCKET")]
+    pub(crate) s3_data_bucket: Option<String>,
+    /// Optional path prefix within the data bucket
+    #[arg(long, value_name = "PATH")]
+    pub(crate) s3_data_path: Option<String>,
+    /// Customer-owned S3 bucket for backups
+    #[arg(long, value_name = "BUCKET")]
+    pub(crate) s3_backups_bucket: Option<String>,
+    /// Optional path prefix within the backups bucket
+    #[arg(long, value_name = "PATH")]
+    pub(crate) s3_backups_path: Option<String>,
+    /// IAM role ARN RawTree should assume
+    #[arg(long, value_name = "ARN")]
+    pub(crate) s3_role_arn: Option<String>,
+    /// External ID configured in the customer IAM role trust policy
+    #[arg(long, value_name = "ID")]
+    pub(crate) s3_external_id: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct S3StorageMetadata {
+    pub(crate) data: S3StorageDestination,
+    pub(crate) backups: S3StorageDestination,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct S3StorageDestination {
+    pub(crate) bucket: String,
+    pub(crate) path: String,
+}
+
+impl S3StorageArgs {
+    pub(crate) fn to_json(&self) -> Result<Option<Value>> {
+        let configured = [
+            &self.s3_data_bucket,
+            &self.s3_data_path,
+            &self.s3_backups_bucket,
+            &self.s3_backups_path,
+            &self.s3_role_arn,
+            &self.s3_external_id,
+        ]
+        .iter()
+        .any(|value| value.is_some());
+        if !configured {
+            return Ok(None);
+        }
+
+        let data_bucket = required_s3_value(&self.s3_data_bucket, "--s3-data-bucket")?;
+        let backups_bucket = required_s3_value(&self.s3_backups_bucket, "--s3-backups-bucket")?;
+        let role_arn = required_s3_value(&self.s3_role_arn, "--s3-role-arn")?;
+        let external_id = required_s3_value(&self.s3_external_id, "--s3-external-id")?;
+
+        Ok(Some(json!({
+            "data": {
+                "bucket": data_bucket,
+                "path": self.s3_data_path.as_deref().unwrap_or(""),
+            },
+            "backups": {
+                "bucket": backups_bucket,
+                "path": self.s3_backups_path.as_deref().unwrap_or(""),
+            },
+            "role_arn": role_arn,
+            "external_id": external_id,
+        })))
+    }
+}
+
+fn required_s3_value<'a>(value: &'a Option<String>, flag: &str) -> Result<&'a str> {
+    value.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "S3 storage is incomplete. Provide --s3-data-bucket, --s3-backups-bucket, --s3-role-arn, and --s3-external-id. Missing {flag}."
+        )
+    })
 }
 
 #[derive(Parser)]
@@ -263,6 +344,8 @@ pub enum DatabaseCommand {
     Create {
         /// Database name
         name: String,
+        #[command(flatten)]
+        s3_storage: S3StorageArgs,
     },
     /// Set the default database
     Use {
@@ -330,6 +413,8 @@ pub enum ClusterCommand {
         /// Minutes without activity before automatically pausing; 0 disables idling
         #[arg(long)]
         idle_timeout_minutes: Option<u64>,
+        #[command(flatten)]
+        s3_storage: S3StorageArgs,
     },
     /// Set the default cluster
     Use {
@@ -414,7 +499,7 @@ pub enum TableCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, ClusterCommand, ClusterSizeArg, Command, KeyCommand};
+    use super::{Cli, ClusterCommand, ClusterSizeArg, Command, KeyCommand, S3StorageArgs};
     use clap::{error::ErrorKind, CommandFactory, Parser};
 
     #[test]
@@ -517,12 +602,73 @@ mod tests {
                     idle_timeout_minutes: Some(30),
                     min_size,
                     max_size: Some(max_size),
+                    ..
                 }
             } if name == "production"
                 && replicas == 2
                 && min_size == ClusterSizeArg { cpu_cores: 2, memory_gib: 8 }
                 && max_size == ClusterSizeArg { cpu_cores: 64, memory_gib: 256 }
         ));
+    }
+
+    #[test]
+    fn cluster_create_parses_s3_storage_options() {
+        let cli = Cli::try_parse_from([
+            "rtree",
+            "cluster",
+            "create",
+            "--name",
+            "production",
+            "--replicas",
+            "1",
+            "--min-size",
+            "2:8",
+            "--s3-data-bucket",
+            "customer-data",
+            "--s3-data-path",
+            "rawtree/data",
+            "--s3-backups-bucket",
+            "customer-backups",
+            "--s3-backups-path",
+            "rawtree/backups",
+            "--s3-role-arn",
+            "arn:aws:iam::123456789012:role/RawTreeS3Access",
+            "--s3-external-id",
+            "rawtree-example",
+        ])
+        .expect("cluster create S3 options should parse");
+
+        let Command::Cluster {
+            action: ClusterCommand::Create { s3_storage, .. },
+        } = cli.command
+        else {
+            panic!("expected cluster create command");
+        };
+
+        assert_eq!(
+            s3_storage
+                .to_json()
+                .expect("complete S3 options should be valid"),
+            Some(serde_json::json!({
+                "data": {"bucket": "customer-data", "path": "rawtree/data"},
+                "backups": {"bucket": "customer-backups", "path": "rawtree/backups"},
+                "role_arn": "arn:aws:iam::123456789012:role/RawTreeS3Access",
+                "external_id": "rawtree-example"
+            }))
+        );
+    }
+
+    #[test]
+    fn partial_s3_storage_options_are_rejected_before_request() {
+        let args = S3StorageArgs {
+            s3_data_bucket: Some("customer-data".to_string()),
+            ..S3StorageArgs::default()
+        };
+
+        let error = args
+            .to_json()
+            .expect_err("partial S3 options should be rejected");
+        assert!(error.to_string().contains("--s3-backups-bucket"));
     }
 
     #[test]

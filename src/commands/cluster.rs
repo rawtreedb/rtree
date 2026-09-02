@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::table_output::new_cli_table;
-use crate::cli::ClusterSizeArg;
+use crate::cli::{ClusterSizeArg, S3StorageArgs, S3StorageMetadata};
 use crate::client::ApiClient;
 use crate::config;
 use crate::output;
@@ -41,6 +41,8 @@ struct ClusterItem {
     resources: Option<ClusterResources>,
     can_pause: bool,
     can_resume: bool,
+    #[serde(default, alias = "custom_s3")]
+    s3_storage: Option<S3StorageMetadata>,
     idle_timeout_minutes: u64,
 }
 
@@ -116,6 +118,7 @@ pub fn create(
     options: ClusterCreateOptions<'_>,
     json_mode: bool,
 ) -> Result<()> {
+    let s3_storage = options.s3_storage.to_json()?;
     let (_, sizes) = load_cluster_sizes(client)?;
     let (min_index, min_size) = resolve_cluster_size(&sizes.sizes, options.min_size)?;
     let (max_index, max_size) = options
@@ -133,6 +136,7 @@ pub fn create(
         min_size,
         max_size,
         options.idle_timeout_minutes,
+        s3_storage,
     );
 
     let value: Value = client.post(&clusters_collection_path(options.organization), &body)?;
@@ -160,6 +164,7 @@ pub struct ClusterCreateOptions<'a> {
     pub min_size: ClusterSizeArg,
     pub max_size: Option<ClusterSizeArg>,
     pub idle_timeout_minutes: Option<u64>,
+    pub s3_storage: S3StorageArgs,
 }
 
 pub fn update(
@@ -235,6 +240,7 @@ pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> 
             "replicas",
             "size / replica",
             "idle timeout",
+            "storage",
             "created",
             "id",
         ]);
@@ -250,6 +256,7 @@ pub fn list(client: &ApiClient, organization: Option<&str>, json_mode: bool) -> 
                 Cell::new(replicas).set_alignment(CellAlignment::Right),
                 Cell::new(format_size_per_replica(cluster.resources.as_ref())),
                 Cell::new(format_idle_timeout(cluster.idle_timeout_minutes)),
+                Cell::new(format_storage(cluster.s3_storage.as_ref())),
                 Cell::new(format_created_at(&cluster.created_at)),
                 Cell::new(&cluster.id),
             ]);
@@ -321,6 +328,7 @@ pub fn status(
             "Idle timeout: {}",
             format_idle_timeout(cluster.idle_timeout_minutes)
         );
+        println!("Storage: {}", format_storage(cluster.s3_storage.as_ref()));
         if let Some(message) = cluster.status.message.as_deref() {
             println!("Message: {message}");
         }
@@ -462,6 +470,7 @@ fn create_request_body(
     min_size: ClusterSizeArg,
     max_size: ClusterSizeArg,
     idle_timeout_minutes: Option<u64>,
+    s3_storage: Option<Value>,
 ) -> Value {
     let mut body = json!({
         "name": name,
@@ -474,6 +483,9 @@ fn create_request_body(
     });
     if let Some(idle_timeout_minutes) = idle_timeout_minutes {
         body["idle_timeout_minutes"] = json!(idle_timeout_minutes);
+    }
+    if let Some(s3_storage) = s3_storage {
+        body["s3_storage"] = s3_storage;
     }
     body
 }
@@ -552,6 +564,14 @@ fn format_idle_timeout(minutes: u64) -> String {
     }
 }
 
+fn format_storage(storage: Option<&S3StorageMetadata>) -> &'static str {
+    if storage.is_some() {
+        "customer-owned S3"
+    } else {
+        "cluster default"
+    }
+}
+
 fn format_created_at(created_at: &str) -> String {
     DateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S%.f%#z")
         .map(|timestamp| {
@@ -596,10 +616,11 @@ mod tests {
     use super::{
         cluster_path, cluster_size_json, clusters_collection_path, create_request_body,
         default_cluster_after_delete, delete_output, format_created_at, format_idle_timeout,
-        format_phase, format_size_per_replica, renamed_default_cluster, resolve_cluster,
-        resolve_cluster_size, ClusterItem, ClusterResources, ClusterSizeItem, ClusterStatus,
+        format_phase, format_size_per_replica, format_storage, renamed_default_cluster,
+        resolve_cluster, resolve_cluster_size, ClusterItem, ClusterResources, ClusterSizeItem,
+        ClusterStatus,
     };
-    use crate::cli::ClusterSizeArg;
+    use crate::cli::{ClusterSizeArg, S3StorageArgs};
 
     #[test]
     fn collection_path_encodes_organization() {
@@ -692,6 +713,7 @@ mod tests {
                     memory_gib: 256,
                 },
                 Some(30),
+                None,
             ),
             json!({
                 "name": "production",
@@ -719,6 +741,7 @@ mod tests {
             resources: None,
             can_pause: true,
             can_resume: false,
+            s3_storage: None,
             idle_timeout_minutes: 15,
         }
     }
@@ -828,6 +851,70 @@ mod tests {
         assert!(!cluster.can_pause);
         assert!(!cluster.can_resume);
         assert_eq!(cluster.idle_timeout_minutes, 15);
+    }
+
+    #[test]
+    fn cluster_storage_response_deserializes_with_the_new_field_name() {
+        let cluster: ClusterItem = serde_json::from_value(json!({
+            "id": "cluster-id",
+            "name": "production",
+            "created_at": "2026-07-14 20:38:33.004347+00",
+            "status": {"phase": "ready", "ready": true, "message": null},
+            "resources": null,
+            "can_pause": true,
+            "can_resume": false,
+            "s3_storage": {
+                "data": {"bucket": "customer-data", "path": "rawtree/data"},
+                "backups": {"bucket": "customer-backups", "path": "rawtree/backups"}
+            },
+            "idle_timeout_minutes": 15
+        }))
+        .expect("cluster storage response should deserialize");
+
+        assert_eq!(
+            format_storage(cluster.s3_storage.as_ref()),
+            "customer-owned S3"
+        );
+        assert_eq!(
+            cluster.s3_storage.expect("storage metadata").data.bucket,
+            "customer-data"
+        );
+    }
+
+    #[test]
+    fn cluster_create_body_uses_s3_storage() {
+        let storage = S3StorageArgs {
+            s3_data_bucket: Some("customer-data".to_string()),
+            s3_data_path: Some("rawtree/data".to_string()),
+            s3_backups_bucket: Some("customer-backups".to_string()),
+            s3_backups_path: Some("rawtree/backups".to_string()),
+            s3_role_arn: Some("arn:aws:iam::123456789012:role/RawTreeS3Access".to_string()),
+            s3_external_id: Some("rawtree-example".to_string()),
+        };
+        let body = create_request_body(
+            "production",
+            1,
+            ClusterSizeArg {
+                cpu_cores: 2,
+                memory_gib: 8,
+            },
+            ClusterSizeArg {
+                cpu_cores: 2,
+                memory_gib: 8,
+            },
+            None,
+            storage.to_json().expect("valid storage"),
+        );
+
+        assert_eq!(
+            body["s3_storage"],
+            json!({
+                "data": {"bucket": "customer-data", "path": "rawtree/data"},
+                "backups": {"bucket": "customer-backups", "path": "rawtree/backups"},
+                "role_arn": "arn:aws:iam::123456789012:role/RawTreeS3Access",
+                "external_id": "rawtree-example"
+            })
+        );
     }
 
     #[test]
