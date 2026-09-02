@@ -184,6 +184,17 @@ rtree cluster create \
   --min-size 2:8 \
   --max-size 64:256 \
   --idle-timeout-minutes 30
+# Or create a cluster with customer-owned S3 storage
+rtree cluster create \
+  --name customer-data \
+  --replicas 1 \
+  --min-size 2:8 \
+  --s3-data-bucket acme-rawtree-data \
+  --s3-data-path rawtree/data \
+  --s3-backups-bucket acme-rawtree-backups \
+  --s3-backups-path rawtree/backups \
+  --s3-role-arn arn:aws:iam::123456789012:role/RawTreeS3Access \
+  --s3-external-id rawtree-example
 rtree cluster use production
 rtree cluster status production
 rtree cluster update production --idle-timeout-minutes 60
@@ -200,6 +211,24 @@ catalog. Run `rtree cluster sizes` to see the currently available sizes; add
 `--json` for a machine-readable response.
 `--idle-timeout-minutes` is optional on create and update; omit it to use the
 server default on create, and pass `0` to disable automatic idling.
+
+Cluster and database creation accept the same customer-owned S3 options. Pass
+all four required values (`--s3-data-bucket`, `--s3-backups-bucket`,
+`--s3-role-arn`, and `--s3-external-id`) to send the platform's `s3_storage`
+configuration; the data and backup paths are optional. For a database:
+
+```sh
+rtree database create analytics \
+  --s3-data-bucket acme-rawtree-data \
+  --s3-backups-bucket acme-rawtree-backups \
+  --s3-role-arn arn:aws:iam::123456789012:role/RawTreeS3Access \
+  --s3-external-id rawtree-example
+```
+
+If no S3 options are passed, the database inherits the cluster's storage. Use
+`rtree cluster list --json` or `rtree database list --json` to inspect the
+safe bucket/path metadata returned as `s3_storage`; credentials are never
+returned.
 
 Cluster lifecycle and provisioning changes are asynchronous. The `create`,
 `stop`, `resume`, and `delete` commands return as soon as the API accepts the

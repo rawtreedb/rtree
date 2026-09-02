@@ -286,13 +286,14 @@ fn run(cli: Cli) -> Result<()> {
                     json,
                 )
             }
-            DatabaseCommand::Create { name } => {
+            DatabaseCommand::Create { name, s3_storage } => {
                 let effective_org = resolve_effective_org(&client, cli_org.clone());
                 commands::database::create(
                     &client,
                     &name,
                     effective_org.as_deref(),
                     effective_cluster.as_deref(),
+                    s3_storage,
                     json,
                 )
             }
@@ -340,6 +341,7 @@ fn run(cli: Cli) -> Result<()> {
                     min_size,
                     max_size,
                     idle_timeout_minutes,
+                    s3_storage,
                 } => commands::cluster::create(
                     &client,
                     commands::cluster::ClusterCreateOptions {
@@ -349,6 +351,7 @@ fn run(cli: Cli) -> Result<()> {
                         min_size,
                         max_size,
                         idle_timeout_minutes,
+                        s3_storage,
                     },
                     json,
                 ),
